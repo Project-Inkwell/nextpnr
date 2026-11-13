@@ -447,19 +447,37 @@ def import_sdf_timings(variant, sdfcell):
                 TimingValue(int(min(entry.rising.minv, entry.falling.minv)*1000),
                     int(max(entry.rising.maxv, entry.falling.maxv)*1000)))
 
-def import_bram_timings(timing, sdf, is_virtex7=False):
-    # RAMB18 hold figures read off Vivado's own probed paths on the VC707
-    # oracle (docs/extracted-timing.md), in place of the SDF's generic
-    # (and much wider) device-level hold envelope. No equivalent
-    # measurement exists for any other family.
-    def vivado_hold_ps(port):
-        if not is_virtex7: return None
-        table = {
+def import_bram_timings(timing, sdf, device):
+    # Block RAM input hold figures read off Vivado's own paths, in place of the
+    # SDF's generic (and much wider) device-level hold envelope, whose maximum
+    # (about 0.67 ns for the data inputs) the hold check would otherwise use.
+    #  - virtex7: Vivado's probed paths on the VC707 (xc7vx485t-2).
+    #  - kintex7 and artix7: Vivado 2020.1's Hold_ramb36e1_* library value,
+    #    the worst over its corners and over every pin of the group, for
+    #    flip-flops into each input of a true-dual-port RAMB36E1 routed on an
+    #    xc7k160t-1 and an xc7a50t-1; the two parts gave the same maxima.
+    # Other families keep the envelope.
+    hold_tables = {
+        "virtex7": {
             "DIADI": 255, "DIPADIP": 255, "DIBDI": 296, "DIPBDIP": 296,
             "ADDRARDADDR": 183, "ADDRBWRADDR": 183,
             "ENARDEN": 96, "ENBWREN": 96,
             "WEA": 46, "WEBWE": 46,
-        }
+        },
+        "kintex7/artix7": {
+            "DIADI": 296, "DIPADIP": 296, "DIBDI": 296, "DIPBDIP": 296,
+            "ADDRARDADDR": 183, "ADDRBWRADDR": 183,
+            "ENARDEN": 96, "ENBWREN": 96,
+            "WEA": 89, "WEBWE": 89,
+        },
+    }
+    if device.startswith("xc7v"):
+        table = hold_tables["virtex7"]
+    elif device.startswith("xc7k") or device.startswith("xc7a"):
+        table = hold_tables["kintex7/artix7"]
+    else:
+        table = {}
+    def vivado_hold_ps(port):
         # bram36's control-bus ports carry a trailing L/U (18K-half) suffix
         if port not in table and port[-1:] in ("L", "U") and port[:-1] in table:
             port = port[:-1]
@@ -737,7 +755,7 @@ def main():
             for port, delay in clock_outs:
                 mem.add_clock_out("CLK", port, ClockEdge.RISING, delay)
 
-        import_bram_timings(ch.timing, parse_sdf.parse_sdf_file(path.join(timings_root, "timings", "BRAM_L.sdf")), is_virtex7)
+        import_bram_timings(ch.timing, parse_sdf.parse_sdf_file(path.join(timings_root, "timings", "BRAM_L.sdf")), args.device)
 
     # Import package pins
     for package_name, package in sorted(d.packages.items(), key=lambda x:x[0]):
