@@ -586,8 +586,8 @@ jobs:
             die: xc7vx485t
             timeout: 300
             pnr_flags: --placer-heap-timingweight 100 --placer-heap-congestion-spread -o delay-matrix=$EX/delay-matrix-xc7vx485t.txt
-            fom_max_worst: 6100
-            fom_max_p95: 5400
+            fom_max_worst: 5730
+            fom_max_p95: 5030
 
           # The lowRISC Sonata's Linux SoC: dual-core VexRiscv-SMP with a
           # shared FPU, 64 KiB I-caches and HyperRAM, on an xc7a50t.  It is
@@ -1012,8 +1012,8 @@ jobs:
       # block RAM placement rather than anything nextpnr reports.  The score
       # (bram_fom.py) is each block RAM's worst estimated read path to the
       # registers it feeds.  The worst score is the test: every placement that
-      # read its ROM on the board scored 5995 ps or less, the two that did not
-      # 6251 and 6961, and the limit sits between; the p95 limit is a backstop.  It also insists that the
+      # read its ROM on the board scored 5625 ps or less, the two that did not
+      # 5881 and 6591 (60 ps block RAM clock pin), and the limit sits between; the p95 limit is a backstop.  It also insists that the
       # clock-tree model and the block RAM pass ran, since a run without them
       # is the configuration that failed.
       - name: Block RAM placement figure of merit
