@@ -38,7 +38,7 @@ env:
   # carrying the cases.  Fixed revisions, because the chipdb decides what the
   # cases do.
   PRJXRAY_DB_REV: a8b09269beb6e3d3c07e2a0901f845420df1c802
-  DEMO_PROJECTS_REV: c6dee46a8e7131779c1ddf898f246e293ba8ff7a
+  DEMO_PROJECTS_REV: 7baeed51283580b596b8d280135447ea7cebe569
 
 jobs:
   regression:
@@ -137,8 +137,8 @@ jobs:
           # (ibufds-gte2-odiv2-bufgce, ibufds-gte2-shared-mgtclkout).
           # After them, the guards of #158 (inverted-clock), #165 (the four
           # xdc- cases), #166 (srlc16e), #167 (srl-q31-fabric,
-          # srl-q31-bel-above-a), #174 (ff-falling-capture) and #177
-          # (clock-net-inv).
+          # srl-q31-bel-above-a), #174 (ff-falling-capture), #177
+          # (clock-net-inv) and #180 (part-dsp-limit, part-utilisation).
           demo-projects/regression/run.sh \
             clock-srcc-bufg bram-sdp-unused-port bufg-fabric-driven \
             config-primitive-startupe2 iddr-four-iff-flops \
@@ -156,7 +156,8 @@ jobs:
             xdc-repeated-target xdc-unbalanced \
             srlc16e \
             srl-q31-fabric srl-q31-bel-above-a \
-            ff-falling-capture clock-net-inv
+            ff-falling-capture clock-net-inv \
+            part-dsp-limit part-utilisation
 
       # Failing today, on purpose and by name.  These three cases are a gap of
       # this engine alone, with no counterpart in the fork; PR #56 is still open.
