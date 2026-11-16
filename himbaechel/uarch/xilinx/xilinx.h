@@ -188,6 +188,10 @@ struct XilinxImpl : HimbaechelAPI
     void parse_xdc(const std::string &filename);
     void pack() override;
     void apply_loc_constraints(const pool<IdString> &only_types = {});
+    void resolve_user_bels();
+    void check_user_bels() const;
+    // cell -> (its BEL attribute as written, the himbaechel bel name), recorded before packing
+    dict<IdString, std::pair<std::string, std::string>> user_bels;
     void prePlace() override;
     void preRoute() override;
     void apply_prerouted();
