@@ -21,6 +21,9 @@
 #include "gtest/gtest.h"
 #include "nextpnr.h"
 #include "uarch/xilinx/xilinx.h"
+#include <regex>
+#include <sstream>
+#include <string>
 #define HIMBAECHEL_CONSTIDS "uarch/xilinx/constids.inc"
 #include "himbaechel_constids.h"
 
@@ -87,4 +90,87 @@ TEST_F(XilinxPartResourcesTest, csg324_counts_its_bonded_io)
         // every IDELAY counts, bonded or not, as in Vivado
         EXPECT_EQ(n[id_IDELAYE2], 250) << device;
     }
+}
+
+// The JSON report is what apio reads. Cells on a type whose bels are all
+// hidden (the constant drivers) must not appear as used with nothing
+// available. These two are created and not placed, so they count as their
+// type. A placed cell counts on the bel it occupies. PAD stays the
+// bonded-pad count, VP and VN included.
+TEST_F(XilinxPartResourcesTest, report_used_stays_within_available)
+{
+    ArchArgs chipArgs;
+    chipArgs.device = "xc7a35tcsg324-1";
+    Context ctx(chipArgs);
+    ctx.uarch->init(&ctx);
+    ctx.late_init();
+    ctx.createCell(ctx.id("$PACKER_GND_DRV"), id_PSEUDO_GND);
+    ctx.createCell(ctx.id("$PACKER_VCC_DRV"), id_PSEUDO_VCC);
+    std::ostringstream out;
+    ctx.writeJsonReport(out);
+    const std::string text = out.str();
+    const bool gnd_is_absent = text.find("\"PSEUDO_GND\"") == std::string::npos;
+    const bool vcc_is_absent = text.find("\"PSEUDO_VCC\"") == std::string::npos;
+    EXPECT_TRUE(gnd_is_absent);
+    EXPECT_TRUE(vcc_is_absent);
+    // The root object is a std::map, so "fmax" is written before "utilization".
+    // Take the utilization object by its braces.
+    const size_t util_at = text.find("\"utilization\"");
+    ASSERT_NE(util_at, std::string::npos);
+    const size_t brace = text.find('{', util_at);
+    ASSERT_NE(brace, std::string::npos);
+    int depth = 0;
+    size_t util_end = std::string::npos;
+    for (size_t i = brace; i < text.size(); ++i) {
+        const bool opens = text[i] == '{';
+        const bool closes = text[i] == '}';
+        if (opens)
+            depth++;
+        if (closes)
+            depth--;
+        const bool closed_the_object = closes && depth == 0;
+        if (closed_the_object) {
+            util_end = i;
+            break;
+        }
+    }
+    ASSERT_NE(util_end, std::string::npos);
+    const std::string util = text.substr(brace, util_end - brace + 1);
+    const std::regex row("\"([A-Za-z0-9_]+)\": \\{\"available\": (-?[0-9]+), \"used\": (-?[0-9]+)\\}");
+    auto begin = std::sregex_iterator(util.begin(), util.end(), row);
+    auto end = std::sregex_iterator();
+    int rows = 0;
+    bool saw_lut = false;
+    bool saw_ff = false;
+    bool saw_pad = false;
+    bool saw_iob = false;
+    for (auto it = begin; it != end; ++it) {
+        const std::string name = (*it)[1].str();
+        const int available = std::stoi((*it)[2].str());
+        const int used = std::stoi((*it)[3].str());
+        EXPECT_GE(used, 0) << name;
+        EXPECT_LE(used, available) << name;
+        if (name == "SLICE_LUTX") {
+            EXPECT_EQ(available, 20800);
+            saw_lut = true;
+        }
+        if (name == "SLICE_FFX") {
+            EXPECT_EQ(available, 41600);
+            saw_ff = true;
+        }
+        if (name == "PAD") {
+            EXPECT_EQ(available, 212);
+            saw_pad = true;
+        }
+        if (name == "IOB33_INBUF_EN") {
+            EXPECT_EQ(available, 210);
+            saw_iob = true;
+        }
+        rows++;
+    }
+    EXPECT_GT(rows, 10);
+    EXPECT_TRUE(saw_lut);
+    EXPECT_TRUE(saw_ff);
+    EXPECT_TRUE(saw_pad);
+    EXPECT_TRUE(saw_iob);
 }
