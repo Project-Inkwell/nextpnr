@@ -804,6 +804,15 @@ int CommandHandler::exec()
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
+    // The log file is an output as well: a failed write must not go unnoticed, whether the run ends well or with an
+    // error. Closes the file and tells whether the writes to it failed.
+    auto log_file_failed = [&]() {
+        if (!logfile.is_open())
+            return false;
+        logfile.close();
+        return logfile.fail();
+    };
+
     try {
         if (!parseOptions())
             return 125;
@@ -819,12 +828,13 @@ int CommandHandler::exec()
         printFooter();
         log_break();
         log_info("Program finished normally.\n");
-        // The log file is an output as well: a failed write must not go unnoticed
-        if (logfile.is_open())
-            close_ofstream_and_log_error(logfile, vm["log"].as<std::string>(), "log file");
+        if (log_file_failed())
+            log_error("Failed to write log file '%s'.\n", vm["log"].as<std::string>().c_str());
         return rc;
     } catch (log_execution_error_exception) {
         printFooter();
+        if (log_file_failed())
+            std::cerr << "ERROR: Failed to write log file '" << vm["log"].as<std::string>() << "'.\n";
         return 125;
     }
 }

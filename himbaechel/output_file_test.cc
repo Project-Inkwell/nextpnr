@@ -23,8 +23,22 @@
 #include "gtest/gtest.h"
 #include "log.h"
 #include "nextpnr.h"
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 USING_NEXTPNR_NAMESPACE
+
+static int process_id()
+{
+#ifdef _WIN32
+    return _getpid();
+#else
+    return getpid();
+#endif
+}
 
 // Every output file of nextpnr is opened with open_ofstream_and_log_error() and has to be closed with
 // close_ofstream_and_log_error(): a failed write only sets the stream's state, which the destructor ignores.
@@ -40,7 +54,9 @@ TEST(OutputFileTest, a_write_that_fails_is_an_error_when_the_file_is_closed)
 
 TEST(OutputFileTest, a_file_that_is_written_closes_without_an_error)
 {
-    const std::string filename = ::testing::TempDir() + "nextpnr_output_file_test.txt";
+    // one file per process: the test binaries of several microarchitectures may run at the same time
+    const std::string filename =
+            ::testing::TempDir() + "nextpnr_output_file_test_" + std::to_string(process_id()) + ".txt";
     {
         auto out = open_ofstream_and_log_error(filename, "test file");
         out << "contents";
