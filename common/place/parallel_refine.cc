@@ -378,6 +378,10 @@ struct ParallelRefine
         // Setup per thread context
         for (int i = 0; i < cfg.threads; i++) {
             t.emplace_back(ctx, g, i);
+            // Every worker gets its own random stream, derived from the context seed (--seed) in worker order, so the
+            // result follows the seed but not the scheduling of the threads. Left alone, all workers start from the
+            // same default state and draw the same sequence.
+            t.back().rng.rngseed(ctx->rng64());
         }
         // Setup region bounds
         for (auto &region : ctx->region) {
