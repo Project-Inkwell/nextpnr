@@ -545,13 +545,45 @@ void XC7Packer::pack_io()
         pad->attrs[id_PACKAGE_PIN] = pin;
         pad->attrs[id_LOC] = pin;
         pad->attrs[id_BEL] = std::string(ctx->nameOfBel(bel));
-        // The pair shares one standard; a port the XDC left without one takes its partner's, as in Vivado.
-        const bool pad_has_no_iostandard = !pad->attrs.count(id_IOSTANDARD);
-        const bool partner_has_an_iostandard = partner->attrs.count(id_IOSTANDARD) != 0;
-        if (pad_has_no_iostandard && partner_has_an_iostandard)
-            pad->attrs[id_IOSTANDARD] = partner->attrs.at(id_IOSTANDARD);
         used_io_bels.insert(bel);
         io_bel_owner.emplace(ctx->nameOfBel(bel), pad->name.str(ctx));
+    }
+    // The two ports of a differential buffer share one standard, and the XDC
+    // may give it to either of them, as Vivado takes it: a port without one
+    // takes its partner's (every pad needs one, check_valid_pad). Two
+    // different standards are an error: decomposing the buffer mixed them,
+    // and Vivado keeps the one set last, an order the netlist does not have.
+    for (auto &iob : pad_and_buf) {
+        const bool pad_is_n = is_n_port(iob.second);
+        if (!pad_is_n)
+            continue;
+        CellInfo *pad = iob.first;
+        const IdString partner_port = other_port(iob.second.port);
+        CellInfo *partner = nullptr;
+        for (auto &other : pad_and_buf) {
+            const bool is_the_partner = other.second.cell == iob.second.cell && other.second.port == partner_port;
+            if (is_the_partner)
+                partner = other.first;
+        }
+        const bool pair_has_no_p_port = partner == nullptr;
+        if (pair_has_no_p_port)
+            continue;
+        const bool pad_has_an_iostandard = pad->attrs.count(id_IOSTANDARD) != 0;
+        const bool partner_has_an_iostandard = partner->attrs.count(id_IOSTANDARD) != 0;
+        const bool only_the_partner_has_one = partner_has_an_iostandard && !pad_has_an_iostandard;
+        if (only_the_partner_has_one)
+            pad->attrs[id_IOSTANDARD] = partner->attrs.at(id_IOSTANDARD);
+        const bool only_the_pad_has_one = pad_has_an_iostandard && !partner_has_an_iostandard;
+        if (only_the_pad_has_one)
+            partner->attrs[id_IOSTANDARD] = pad->attrs.at(id_IOSTANDARD);
+        const bool standards_differ = pad_has_an_iostandard && partner_has_an_iostandard &&
+                                      pad->attrs.at(id_IOSTANDARD) != partner->attrs.at(id_IOSTANDARD);
+        if (standards_differ)
+            log_error("%s '%s': its P port '%s' has IOSTANDARD %s and its N port '%s' has %s; the two ports of a "
+                      "differential pair have one standard.\n",
+                      iob.second.cell->type.c_str(ctx), ctx->nameOf(iob.second.cell), ctx->nameOf(partner),
+                      partner->attrs.at(id_IOSTANDARD).as_string().c_str(), ctx->nameOf(pad),
+                      pad->attrs.at(id_IOSTANDARD).as_string().c_str());
     }
     // Constrain unconstrained IO
     for (auto &iob : pad_and_buf) {

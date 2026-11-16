@@ -171,7 +171,11 @@ Line counts are `wc -l` on the checkout.
 - **IDDR** ✅ → `ILOGICE3_IFF`; **ODDR** ✅ → `OLOGICE3_OUTFF/TFF` or `OLOGICE2_OUTFF/TFF`.
 - **ISERDESE2** ✅, **OSERDESE2** ✅ (master/slave cascade).
 - **IDELAYE2** ✅, **ODELAYE2** ✅, **IDELAYCTRL** ✅ (duplicated per bank).
-- Unconstrained IO is **not** supported (`pack_io.cc:361` — `log_error("FIXME: unconstrained IO not supported")`).
+- Unconstrained IO is **not** supported (`pack_io.cc` — `log_error("FIXME: unconstrained IO not supported")`),
+  except one port of a differential buffer whose other port is on a package pin: it goes on the
+  other pin of the pair (master P, slave N of one IOB tile), as in Vivado. The two ports of a
+  differential buffer share one `IOSTANDARD`: a port without one takes its partner's, and two
+  different ones are an error.
 
 ### Clocking
 
@@ -342,7 +346,8 @@ the kintex7 code path is present but not wired into a default device.
 
 The most meaningful `TODO`/`FIXME`/`NPNR_ASSERT_FALSE` markers in `uarch/xilinx`:
 
-- **Unconstrained IO not supported** — `pack_io.cc:361` `log_error("FIXME: unconstrained IO not supported")`.
+- **Unconstrained IO not supported** — `pack_io.cc` `log_error("FIXME: unconstrained IO not supported")`
+  (one port of a differential pair is taken from its partner's pin).
 - **No true differential output** — `pack_io.cc:259` (`FIXME: true diff outputs`); diff outputs
   are emulated with an inverter into the N pin.
 - **MUXF9/F9MUX rejected** on xc7 — `pack.cc:442` (`log_error("MUXF9 is not supported on xc7!")`).
