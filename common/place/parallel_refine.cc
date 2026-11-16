@@ -320,8 +320,8 @@ struct ThreadState : DetailPlacerThreadState
             int x = t.first, y = t.second;
             int lx = std::max(x - g.radius, p.x0), rx = std::min(x + g.radius, p.x1);
             int by = std::max(y - g.radius, p.y0), ty = std::min(y + g.radius, p.y1);
-            int xn = lx + ctx->rng((rx - lx) + 1);
-            int yn = by + ctx->rng((ty - by) + 1);
+            int xn = lx + rng.rng((rx - lx) + 1);
+            int yn = by + rng.rng((ty - by) + 1);
             ++n_move;
             if (do_tile_swap(x, y, xn, yn)) {
                 ++n_accept;
