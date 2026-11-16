@@ -226,6 +226,13 @@ std::vector<std::pair<IdString, IdString>> XilinxPacker::split_lut6_2()
             log_error("LUT6_2 cell '%s' has a BEL constraint but drives both O5 and O6; splitting it in two "
                       "would leave that constraint ambiguous\n",
                       ci->name.c_str(ctx));
+        // With neither output used no half is made, and the BEL would go away with the cell unchecked.
+        const bool bel_constrained_with_no_output_used =
+                (ci->attrs.count(id_BEL) != 0) && o5 == nullptr && o6 == nullptr;
+        if (bel_constrained_with_no_output_used)
+            log_error("LUT6_2 cell '%s' has a BEL constraint but drives neither O5 nor O6; splitting it leaves no "
+                      "cell to place on that bel\n",
+                      ci->name.c_str(ctx));
 
         // One LUT<n_in> cell driving `out`, its INIT the 2^n_in-bit slice of
         // the LUT6_2 INIT starting at bit `lo`.

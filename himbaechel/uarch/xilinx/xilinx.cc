@@ -732,13 +732,78 @@ void XilinxImpl::apply_loc_constraints(const pool<IdString> &only_types)
 
 // A BEL attribute ((* BEL = "..." *), or set_property BEL) may name a bel the
 // way nextpnr writes NEXTPNR_BEL into the routed JSON, "<site>/<bel>"
-// (SLICE_X162Y173/A5FF), or by its himbaechel name, "<tile>/<site>.<bel>"
-// (X250Y5/SLICE_X0Y0.BFF). The packer and the placers look a bel up by the
-// himbaechel name only, so the NEXTPNR_BEL form used to stop the run with
-// "No Bel named". Rewrite it into the himbaechel name before anything reads it.
-// A tile name has no prefix (X<x>Y<y>), so a first part with "_X" is a site.
-// Each BEL is also recorded, for check_user_bels() after placement.
-// Names are compared as strings: this interns no id.
+// (SLICE_X162Y173/A5FF, IOB_X1Y177/IOB33S.PAD), or by its himbaechel name,
+// "<tile>/<site>.<bel>" (X250Y5/SLICE_X0Y0.BFF). The packer and the placers
+// look a bel up by the himbaechel name only, so the NEXTPNR_BEL form used to
+// stop the run with "No Bel named". This returns the himbaechel name of a
+// name in the NEXTPNR_BEL form, and any other name as it is. A tile name has
+// no prefix (X<x>Y<y>), so a first part with "_X<x>Y<y>" is a site; the bel
+// part may have dots of its own. Names are compared as strings: this interns
+// no id.
+std::string XilinxImpl::bel_name_from_site_form(const CellInfo *ci, const std::string &name) const
+{
+    const size_t slash = name.find('/');
+    const bool name_has_one_slash = slash != std::string::npos && name.find('/', slash + 1) == std::string::npos;
+    if (!name_has_one_slash)
+        return name;
+    const std::string site_part = name.substr(0, slash);
+    const std::string bel_part = name.substr(slash + 1);
+    const size_t xpos = site_part.rfind("_X");
+    const size_t ypos = xpos == std::string::npos ? std::string::npos : site_part.find('Y', xpos);
+    const bool site_part_has_coordinates = xpos != std::string::npos && xpos > 0 && ypos != std::string::npos &&
+                                           ypos > xpos + 2 && ypos + 1 < site_part.size();
+    const bool name_is_site_form = !bel_part.empty() && site_part_has_coordinates;
+    if (!name_is_site_form)
+        return name;
+    const std::string x_digits = site_part.substr(xpos + 2, ypos - xpos - 2);
+    const std::string y_digits = site_part.substr(ypos + 1);
+    // Compared with '0'..'9' rather than isdigit(), which takes a negative char (a byte over 0x7f) as undefined.
+    auto all_digits = [](const std::string &s) {
+        return !s.empty() && s.size() <= 6 &&
+               std::all_of(s.begin(), s.end(), [](char c) { return c >= '0' && c <= '9'; });
+    };
+    const bool coordinates_are_numbers = all_digits(x_digits) && all_digits(y_digits);
+    if (!coordinates_are_numbers)
+        return name;
+    const std::string prefix = site_part.substr(0, xpos);
+    const int site_x = std::stoi(x_digits);
+    const int site_y = std::stoi(y_digits);
+    SiteIndex site(-1, -1);
+    for (int tile = 0; tile < ctx->chip_info->tile_insts.ssize() && site.tile < 0; tile++) {
+        const auto &sites = tile_extra_data(tile)->sites;
+        for (int s = 0; s < sites.ssize(); s++) {
+            const bool same_coordinates = sites[s].site_x == site_x && sites[s].site_y == site_y;
+            const bool same_site = same_coordinates && IdString(sites[s].name_prefix).str(ctx) == prefix;
+            if (same_site) {
+                site = SiteIndex(tile, s);
+                break;
+            }
+        }
+    }
+    const bool device_has_no_such_site = site.tile < 0;
+    if (device_has_no_such_site)
+        log_error("cell '%s' has BEL '%s', but this device has no site '%s'\n", ctx->nameOf(ci), name.c_str(),
+                  site_part.c_str());
+    BelId bel;
+    const auto &tile_data = chip_tile_info(ctx->chip_info, site.tile);
+    for (int32_t i = 0; i < tile_data.bels.ssize(); i++) {
+        const BelId candidate(site.tile, i);
+        const bool bel_is_in_the_site = BelSiteKey::unpack(tile_data.bels[i].site).site == site.site;
+        const bool bel_has_the_name = bel_is_in_the_site && bel_name_in_site(candidate).str(ctx) == bel_part;
+        if (bel_has_the_name) {
+            bel = candidate;
+            break;
+        }
+    }
+    const bool site_has_no_such_bel = bel == BelId();
+    if (site_has_no_such_bel)
+        log_error("cell '%s' has BEL '%s', but site '%s' has no bel '%s'\n", ctx->nameOf(ci), name.c_str(),
+                  site_part.c_str(), bel_part.c_str());
+    return ctx->getBelName(bel).str(ctx);
+}
+
+// Rewrite each BEL attribute into the himbaechel name before anything reads
+// it, and record it for check_user_bels() after placement.
 void XilinxImpl::resolve_user_bels()
 {
     for (auto &cell : ctx->cells) {
@@ -748,65 +813,11 @@ void XilinxImpl::resolve_user_bels()
         if (cell_has_no_bel_attribute)
             continue;
         const std::string name = attr->second.as_string();
-        user_bels[ci->name] = std::make_pair(name, name);
-        const size_t slash = name.find('/');
-        const bool name_has_one_slash = slash != std::string::npos && name.find('/', slash + 1) == std::string::npos;
-        if (!name_has_one_slash)
-            continue;
-        const std::string site_part = name.substr(0, slash);
-        const std::string bel_part = name.substr(slash + 1);
-        const size_t xpos = site_part.rfind("_X");
-        const size_t ypos = xpos == std::string::npos ? std::string::npos : site_part.find('Y', xpos);
-        const bool bel_part_is_a_site_bel = !bel_part.empty() && bel_part.find('.') == std::string::npos;
-        const bool site_part_has_coordinates = xpos != std::string::npos && xpos > 0 && ypos != std::string::npos &&
-                                               ypos > xpos + 2 && ypos + 1 < site_part.size();
-        const bool name_is_site_form = bel_part_is_a_site_bel && site_part_has_coordinates;
-        if (!name_is_site_form)
-            continue;
-        const std::string x_digits = site_part.substr(xpos + 2, ypos - xpos - 2);
-        const std::string y_digits = site_part.substr(ypos + 1);
-        auto all_digits = [](const std::string &s) {
-            return !s.empty() && s.size() <= 6 && std::all_of(s.begin(), s.end(), ::isdigit);
-        };
-        const bool coordinates_are_numbers = all_digits(x_digits) && all_digits(y_digits);
-        if (!coordinates_are_numbers)
-            continue;
-        const std::string prefix = site_part.substr(0, xpos);
-        const int site_x = std::stoi(x_digits);
-        const int site_y = std::stoi(y_digits);
-        SiteIndex site(-1, -1);
-        for (int tile = 0; tile < ctx->chip_info->tile_insts.ssize() && site.tile < 0; tile++) {
-            const auto &sites = tile_extra_data(tile)->sites;
-            for (int s = 0; s < sites.ssize(); s++) {
-                const bool same_coordinates = sites[s].site_x == site_x && sites[s].site_y == site_y;
-                const bool same_site = same_coordinates && IdString(sites[s].name_prefix).str(ctx) == prefix;
-                if (same_site) {
-                    site = SiteIndex(tile, s);
-                    break;
-                }
-            }
-        }
-        const bool device_has_no_such_site = site.tile < 0;
-        if (device_has_no_such_site)
-            log_error("cell '%s' has BEL '%s', but this device has no site '%s'\n", ctx->nameOf(ci), name.c_str(),
-                      site_part.c_str());
-        BelId bel;
-        const auto &tile_data = chip_tile_info(ctx->chip_info, site.tile);
-        for (int32_t i = 0; i < tile_data.bels.ssize(); i++) {
-            const BelId candidate(site.tile, i);
-            const bool bel_is_in_the_site = BelSiteKey::unpack(tile_data.bels[i].site).site == site.site;
-            const bool bel_has_the_name = bel_is_in_the_site && bel_name_in_site(candidate).str(ctx) == bel_part;
-            if (bel_has_the_name) {
-                bel = candidate;
-                break;
-            }
-        }
-        const bool site_has_no_such_bel = bel == BelId();
-        if (site_has_no_such_bel)
-            log_error("cell '%s' has BEL '%s', but site '%s' has no bel '%s'\n", ctx->nameOf(ci), name.c_str(),
-                      site_part.c_str(), bel_part.c_str());
-        attr->second = ctx->getBelName(bel).str(ctx);
-        user_bels[ci->name].second = attr->second.as_string();
+        const std::string bel_name = bel_name_from_site_form(ci, name);
+        const bool name_was_site_form = bel_name != name;
+        if (name_was_site_form)
+            attr->second = bel_name;
+        user_bels[ci->name] = std::make_pair(name, bel_name);
     }
 }
 
@@ -870,12 +881,18 @@ void XilinxImpl::apply_preplaced(bool verbose)
             missing++;
             continue;
         }
-        it->second->attrs[ctx->id("BEL")] = line.substr(tab + 1);
+        // A routed JSON names a site's bel "<site>/<bel>" (NEXTPNR_BEL, which
+        // routing_dump.py copies): it is a BEL attribute like any other, resolved
+        // and checked after placement.
+        const std::string reference_bel = line.substr(tab + 1);
+        const std::string bel_name = bel_name_from_site_form(it->second.get(), reference_bel);
+        it->second->attrs[ctx->id("BEL")] = bel_name;
+        user_bels[it->first] = std::make_pair(reference_bel, bel_name);
         pinned++;
         // The pinned cells' tiles are theirs alone: a new cell placed beside
         // them would need site routing (bypass pins, output muxes) the
         // reference routes may already lock, and the router cannot rip those up.
-        BelId bel = ctx->getBelByNameStr(line.substr(tab + 1));
+        BelId bel = ctx->getBelByNameStr(bel_name);
         const bool bel_name_resolved = (bel != BelId());
         if (bel_name_resolved)
             frozen_tiles.insert(bel.tile);

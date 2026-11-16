@@ -198,6 +198,12 @@ is a line-based, regex/`boost::split` parser supporting a narrow subset:
   single property pairs; `[current_design]` and `INTERNAL_VREF` are warned-and-ignored.
   This is how `PACKAGE_PIN`/`LOC`, `IOSTANDARD`, `DRIVE`, `SLEW`, `PULLTYPE`, `IN_TERM`
   etc. reach the flow. `LOC` is aliased from `PACKAGE_PIN` (`pack_io.cc:341-343`).
+- **`BEL`** (a `(* BEL = "…" *)` attribute, `set_property BEL`, or a line of `-o preplaced`)
+  takes the himbaechel name, `<tile>/<site>.<bel>`, or the name `NEXTPNR_BEL` has in the
+  routed JSON, `<site>/<bel>` (`SLICE_X0Y0/AFF`, `IOB_X1Y177/IOB33S.PAD`), which
+  `resolve_user_bels()` rewrites before packing. It is a requirement: a flip-flop with a
+  `BEL` stays out of its LUT's cluster, and after placement a cell elsewhere, or one the
+  packer replaced without keeping its `BEL`, is an error (`check_user_bels()`).
 - **`create_clock`** with `-period` (ns) on `[get_ports]`/`[get_nets]`
   (`xdc.cc:208-254`): sets `NetInfo::clkconstr` (period + 50% duty). `-name`, `-waveform`,
   `-add` are warned-and-ignored.

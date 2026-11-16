@@ -188,6 +188,7 @@ struct XilinxImpl : HimbaechelAPI
     void parse_xdc(const std::string &filename);
     void pack() override;
     void apply_loc_constraints(const pool<IdString> &only_types = {});
+    std::string bel_name_from_site_form(const CellInfo *ci, const std::string &name) const;
     void resolve_user_bels();
     void check_user_bels() const;
     // cell -> (its BEL attribute as written, the himbaechel bel name), recorded before packing
