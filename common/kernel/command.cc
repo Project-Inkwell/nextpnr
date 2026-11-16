@@ -819,6 +819,9 @@ int CommandHandler::exec()
         printFooter();
         log_break();
         log_info("Program finished normally.\n");
+        // The log file is an output as well: a failed write must not go unnoticed
+        if (logfile.is_open())
+            close_ofstream_and_log_error(logfile, vm["log"].as<std::string>(), "log file");
         return rc;
     } catch (log_execution_error_exception) {
         printFooter();
