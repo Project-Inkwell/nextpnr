@@ -5489,6 +5489,12 @@ struct FasmBackend
 
 } // namespace
 
+void XilinxImpl::write_fasm(std::ostream &out)
+{
+    FasmBackend be(this->ctx, this, out);
+    be.write_fasm();
+}
+
 void XilinxImpl::write_fasm(const std::string &filename)
 {
     // A log_error during the walk throws, and anything already flushed would
@@ -5516,8 +5522,7 @@ void XilinxImpl::write_fasm(const std::string &filename)
 
     {
         auto out = open_ofstream_and_log_error(tmp, "FASM file");
-        FasmBackend be(this->ctx, this, out);
-        be.write_fasm();
+        write_fasm(out);
         out.flush();
         const bool write_failed = !out.good();
         if (write_failed)
