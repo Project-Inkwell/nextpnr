@@ -749,18 +749,21 @@ int CommandHandler::executeMain(std::unique_ptr<Context> ctx)
         auto f = open_ofstream_and_log_error(filename, "JSON '--write' file");
         if (!write_json_file(f, filename, ctx.get()))
             log_error("Saving design failed.\n");
+        close_ofstream_and_log_error(f, filename, "JSON '--write' file");
     }
 
     if (vm.count("sdf")) {
         std::string filename = vm["sdf"].as<std::string>();
         auto f = open_ofstream_and_log_error(filename, "SDF file");
         ctx->writeSDF(f, vm.count("sdf-cvc"));
+        close_ofstream_and_log_error(f, filename, "SDF file");
     }
 
     if (vm.count("report")) {
         std::string filename = vm["report"].as<std::string>();
         auto f = open_ofstream_and_log_error(filename, "report file");
         ctx->writeJsonReport(f);
+        close_ofstream_and_log_error(f, filename, "report file");
     }
 
 #ifndef NO_PYTHON
