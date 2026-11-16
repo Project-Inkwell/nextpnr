@@ -836,6 +836,10 @@ int CommandHandler::exec()
     } catch (log_execution_error_exception) {
         printFooter();
         return finish(125);
+    } catch (...) {
+        // Any other exception ends the process, but a log file that could not be written is reported first
+        finish(125);
+        throw;
     }
 }
 
