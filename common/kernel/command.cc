@@ -804,21 +804,25 @@ int CommandHandler::exec()
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
-    // The log file is an output as well: a failed write must not go unnoticed, whether the run ends well or with an
-    // error. Closes the file and tells whether the writes to it failed.
-    auto log_file_failed = [&]() {
-        if (!logfile.is_open())
-            return false;
-        logfile.close();
-        return logfile.fail();
+    // The log file is an output as well: a failed write must not go unnoticed, whichever way the run ends. Closes the
+    // file and turns a success into an error if the writes to it failed.
+    auto finish = [&](int rc) {
+        if (logfile.is_open()) {
+            logfile.close();
+            if (logfile.fail()) {
+                std::cerr << "ERROR: Failed to write log file '" << vm["log"].as<std::string>() << "'.\n";
+                return rc != 0 ? rc : 125;
+            }
+        }
+        return rc;
     };
 
     try {
         if (!parseOptions())
-            return 125;
+            return finish(125);
 
         if (executeBeforeContext())
-            return 0;
+            return finish(0);
 
         dict<std::string, Property> values;
         std::unique_ptr<Context> ctx = createContext(values);
@@ -828,14 +832,10 @@ int CommandHandler::exec()
         printFooter();
         log_break();
         log_info("Program finished normally.\n");
-        if (log_file_failed())
-            log_error("Failed to write log file '%s'.\n", vm["log"].as<std::string>().c_str());
-        return rc;
+        return finish(rc);
     } catch (log_execution_error_exception) {
         printFooter();
-        if (log_file_failed())
-            std::cerr << "ERROR: Failed to write log file '" << vm["log"].as<std::string>() << "'.\n";
-        return 125;
+        return finish(125);
     }
 }
 
