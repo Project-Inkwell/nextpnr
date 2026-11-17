@@ -20,6 +20,7 @@
 #ifndef HIMBAECHEL_XILINX_H
 #define HIMBAECHEL_XILINX_H
 
+#include <iosfwd>
 #include "extra_data.h"
 #include "himbaechel_api.h"
 #include "log.h"
@@ -204,6 +205,7 @@ struct XilinxImpl : HimbaechelAPI
     void postRoute() override;
     void postRouteArchInfo() override;
     void write_fasm(const std::string &filename);
+    void write_fasm(std::ostream &out); // the walk itself, for a test to read back
     void write_placement(const std::string &filename);
 
     void configurePlacerHeap(PlacerHeapCfg &cfg) override;
