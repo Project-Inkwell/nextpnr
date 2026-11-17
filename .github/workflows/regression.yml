@@ -38,7 +38,7 @@ env:
   # carrying the cases.  Fixed revisions, because the chipdb decides what the
   # cases do.
   PRJXRAY_DB_REV: a8b09269beb6e3d3c07e2a0901f845420df1c802
-  DEMO_PROJECTS_REV: 7baeed51283580b596b8d280135447ea7cebe569
+  DEMO_PROJECTS_REV: dee7869d5ab026dddb951f2367397c45c9d68eba
 
 jobs:
   regression:
@@ -139,6 +139,10 @@ jobs:
           # xdc- cases), #166 (srlc16e), #167 (srl-q31-fabric,
           # srl-q31-bel-above-a), #174 (ff-falling-capture), #177
           # (clock-net-inv) and #180 (part-dsp-limit, part-utilisation).
+          # Then #191 (report-used-within-available), #192 (bel-attribute),
+          # #193 (xdc-skipped-targets), #194 (diff-pair-n-from-package),
+          # #187 (carry-lut-pair-const-inputs) and #204 (ibufds-diff-out,
+          # iob-primitive-unpacked).
           demo-projects/regression/run.sh \
             clock-srcc-bufg bram-sdp-unused-port bufg-fabric-driven \
             config-primitive-startupe2 iddr-four-iff-flops \
@@ -157,7 +161,11 @@ jobs:
             srlc16e \
             srl-q31-fabric srl-q31-bel-above-a \
             ff-falling-capture clock-net-inv \
-            part-dsp-limit part-utilisation
+            part-dsp-limit part-utilisation \
+            report-used-within-available \
+            bel-attribute xdc-skipped-targets diff-pair-n-from-package \
+            carry-lut-pair-const-inputs \
+            ibufds-diff-out iob-primitive-unpacked
 
       # Failing today, on purpose and by name.  These three cases are a gap of
       # this engine alone, with no counterpart in the fork; PR #56 is still open.
