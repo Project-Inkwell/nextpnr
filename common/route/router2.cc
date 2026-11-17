@@ -2348,7 +2348,13 @@ struct Router2
                     for (auto &usr : ni->users) {
                         CellPortKey key(usr);
                         net.max_crit = std::max(net.max_crit, tmg.get_criticality(key));
-                        net.worst_slack = std::min(net.worst_slack, delay_t(tmg.get_setup_slack(key)));
+                        // A sink with no timing path (a clock pin, a constant, an output buffer) reports the
+                        // largest delay_t as its slack, which the float round trip turns into the smallest:
+                        // leave such sinks out of the net's worst slack.
+                        const float slack = tmg.get_setup_slack(key);
+                        const bool has_timing_path = slack < 0.5f * float(std::numeric_limits<delay_t>::max());
+                        if (has_timing_path)
+                            net.worst_slack = std::min(net.worst_slack, delay_t(slack));
                     }
                     if (cfg.bb_budget)
                         apply_budget_bb(net);
