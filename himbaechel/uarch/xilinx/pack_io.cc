@@ -506,7 +506,9 @@ void XC7Packer::pack_io()
         CellInfo *pad = iob.first;
         // Process location constraints
         if (pad->attrs.count(id_PACKAGE_PIN)) {
-            pad->attrs[id_LOC] = pad->attrs.at(id_PACKAGE_PIN);
+            // Copy first: inserting LOC can reallocate the dict that the reference points into.
+            const Property package_pin = pad->attrs.at(id_PACKAGE_PIN);
+            pad->attrs[id_LOC] = package_pin;
         }
         if (pad->attrs.count(id_LOC)) {
             std::string loc = pad->attrs.at(id_LOC).to_string();
