@@ -456,7 +456,9 @@ def import_bram_timings(timing, sdf, device):
     #    the worst over its corners and over every pin of the group, for
     #    flip-flops into each input of a true-dual-port RAMB36E1 routed on an
     #    xc7k160t-1 and an xc7a50t-1; the two parts gave the same maxima.
-    # Other families keep the envelope.
+    #  - zynq7: the same table. A Zynq's fabric is artix7 (z010 to z020) or
+    #    kintex7 (z030 and up), and those two agree.
+    # Spartan-7 keeps the envelope until it is measured.
     hold_tables = {
         "virtex7": {
             "DIADI": 255, "DIPADIP": 255, "DIBDI": 296, "DIPBDIP": 296,
@@ -473,7 +475,7 @@ def import_bram_timings(timing, sdf, device):
     }
     if device.startswith("xc7v"):
         table = hold_tables["virtex7"]
-    elif device.startswith("xc7k") or device.startswith("xc7a"):
+    elif device.startswith(("xc7k", "xc7a", "xc7z")):
         table = hold_tables["kintex7/artix7"]
     else:
         table = {}
