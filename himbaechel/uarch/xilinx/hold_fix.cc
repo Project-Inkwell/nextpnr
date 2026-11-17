@@ -387,6 +387,31 @@ void XilinxImpl::fixup_hold()
         ctx->net_aliases.erase(name);
     };
 
+    // The wires an arc to `usr` has to use: its sink wire and, above it, each wire with a single driver, which is
+    // what router2 reserves for the arc (reserve_sink_wires_for_arc).  Ports whose chains share a wire must stay
+    // on one net.
+    auto sink_chain = [this](const NetInfo *net, const PortRef &usr) {
+        std::vector<WireId> chain;
+        WireId cursor = ctx->getNetinfoSinkWire(net, usr, 0);
+        for (int guard = 0; guard < 16 && cursor != WireId(); guard++) {
+            chain.push_back(cursor);
+            WireId above;
+            int drivers = 0;
+            for (PipId p : ctx->getPipsUphill(cursor)) {
+                above = ctx->getPipSrcWire(p);
+                drivers++;
+                const bool more_than_one_driver = drivers > 1;
+                if (more_than_one_driver)
+                    break;
+            }
+            const bool single_driver = drivers == 1;
+            if (!single_driver)
+                break;
+            cursor = above;
+        }
+        return chain;
+    };
+
     int total_buffers = 0, total_detours = 0;
     for (int pass = 0; pass < max_passes; pass++) {
         const auto &violations = ctx->timing_result.min_delay_violations;
@@ -416,7 +441,28 @@ void XilinxImpl::fixup_hold()
             }
             if (!last_routing)
                 continue;
+            // Several ports can hang off one wire that router2 reserves for the arc (a 5LUT and a 6LUT in one
+            // position; in a SLICEM the write-address pins of all four LUTs; WA7 and WA8 behind the CX and BX
+            // bypass pins), so one short arc is reported once per port: key the target by the top of that chain
+            // where there is one, and the wire is fixed once.
             std::string key = last_routing->to.first.str(ctx) + "/" + last_routing->to.second.str(ctx);
+            {
+                auto cit = ctx->cells.find(last_routing->to.first);
+                auto nit = ctx->nets.find(last_routing->net);
+                const bool cell_and_net_exist = cit != ctx->cells.end() && nit != ctx->nets.end();
+                const bool cell_is_placed = cell_and_net_exist && cit->second->bel != BelId();
+                const bool port_is_on_the_net =
+                        cell_is_placed && cit->second->getPort(last_routing->to.second) == nit->second.get();
+                if (port_is_on_the_net) {
+                    PortRef pr;
+                    pr.cell = cit->second.get();
+                    pr.port = last_routing->to.second;
+                    const std::vector<WireId> chain = sink_chain(nit->second.get(), pr);
+                    const bool has_a_sink_wire = !chain.empty();
+                    if (has_a_sink_wire)
+                        key = ctx->nameOfWire(chain.back());
+                }
+            }
             if (seen.count(key))
                 continue;
             seen.insert(key);
@@ -465,10 +511,12 @@ void XilinxImpl::fixup_hold()
             CellInfo *buf;
             IdString sink_cell;
             Loc origin;
+            std::vector<PortRef> moved; // the sink's port and the ports moved with it, for the undo paths
         };
         std::vector<Pending> pending;
         pool<IdString> touched_nets;
         int no_exit = 0;
+        int companions = 0; // ports moved onto a buffer because their arcs share a wire with the sink's
         for (const auto &t : ft) {
             if (!ctx->nets.count(t.net))
                 continue;
@@ -500,9 +548,45 @@ void XilinxImpl::fixup_hold()
             buf->connectPort(id_A1, net);       // buffer input  = original net
             buf->connectPort(id_O6, buf_out);   // buffer output = new net
 
-            // Move just this sink from the original net onto the buffer output.
-            sink->disconnectPort(t.sink_port);
-            sink->connectPort(t.sink_port, buf_out);
+            // Move this sink from the original net onto the buffer output, and with it every other port of the net
+            // whose arc must use a wire of this one's: a 5LUT and a 6LUT in one position read A1-A5 from one wire
+            // each; in a SLICEM the write address of all four LUTs comes from the D LUT's pins, so one wire carries
+            // the WA4 of four LUT RAMs and the D LUT's A4; WA7 and WA8 sit behind the CX and BX bypass pins that
+            // the F7 and F8 muxes select with.  Left on the original net, those ports would need the wire for it,
+            // and router2 stops at route setup ("attempting to reserve sink input path wire ... for nets
+            // ...$holdbuf1$net and ...$holdbuf0$net").
+            std::vector<PortRef> group;
+            {
+                PortRef own;
+                own.cell = sink;
+                own.port = t.sink_port;
+                group.push_back(own);
+            }
+            pool<WireId> own_chain;
+            for (WireId w : sink_chain(net, group.front()))
+                own_chain.insert(w);
+            const bool sink_has_a_wire = !own_chain.empty();
+            if (sink_has_a_wire) {
+                for (const auto &u : net->users) {
+                    const bool is_the_sink_port = u.cell == sink && u.port == t.sink_port;
+                    if (is_the_sink_port)
+                        continue;
+                    const bool user_is_placed = u.cell != nullptr && u.cell->bel != BelId();
+                    if (!user_is_placed)
+                        continue;
+                    int shared_wires = 0;
+                    for (WireId w : sink_chain(net, u))
+                        shared_wires += own_chain.count(w);
+                    const bool shares_a_wire = shared_wires > 0;
+                    if (shares_a_wire)
+                        group.push_back(u);
+                }
+            }
+            for (const PortRef &pr : group) {
+                pr.cell->disconnectPort(pr.port);
+                pr.cell->connectPort(pr.port, buf_out);
+            }
+            companions += int(group.size()) - 1;
 
             // The buffer is a fabric consumer of the source, which an O5, a
             // carry sum or a 5FF Q can only reach through its position's one
@@ -517,8 +601,11 @@ void XilinxImpl::fixup_hold()
                 if (holdfix_verbose)
                     log_info("Hold-fix: %s -> %s.%s left: the source's slice has no output mux free for a buffer\n",
                              ctx->nameOf(net), ctx->nameOf(sink), t.sink_port.c_str(ctx));
-                sink->disconnectPort(t.sink_port);
-                sink->connectPort(t.sink_port, net);
+                for (const PortRef &pr : group) {
+                    pr.cell->disconnectPort(pr.port);
+                    pr.cell->connectPort(pr.port, net);
+                }
+                companions -= int(group.size()) - 1;
                 buf->disconnectPort(id_A1);
                 buf->disconnectPort(id_O6);
                 ctx->cells.erase(buf->name);
@@ -527,7 +614,7 @@ void XilinxImpl::fixup_hold()
                 continue;
             }
 
-            pending.push_back({buf, t.sink_cell, ctx->getBelLocation(sink->bel)});
+            pending.push_back({buf, t.sink_cell, ctx->getBelLocation(sink->bel), group});
             touched_nets.insert(net->name);
             total_buffers++;
         }
@@ -550,20 +637,21 @@ void XilinxImpl::fixup_hold()
                     continue;
                 }
                 failed++;
-                // reconnect the sink to the original input net, drop the buffer
+                // reconnect the sink, and the ports moved with it, to the original input net; drop the buffer
                 NetInfo *orig = p.buf->getPort(id_A1);
                 NetInfo *buf_out = p.buf->getPort(id_O6);
-                CellInfo *sink = ctx->cells.at(p.sink_cell).get();
-                IdString sink_port;
-                for (auto &pr : sink->ports)
-                    if (pr.second.net == buf_out)
-                        sink_port = pr.first;
                 p.buf->disconnectPort(id_A1);
                 p.buf->disconnectPort(id_O6);
-                if (sink_port != IdString()) {
-                    sink->disconnectPort(sink_port);
-                    sink->connectPort(sink_port, orig);
+                for (const PortRef &pr : p.moved) {
+                    const bool port_is_on_the_buffer = pr.cell->getPort(pr.port) == buf_out;
+                    if (!port_is_on_the_buffer)
+                        continue;
+                    pr.cell->disconnectPort(pr.port);
+                    const bool the_original_net_exists = orig != nullptr;
+                    if (the_original_net_exists)
+                        pr.cell->connectPort(pr.port, orig);
                 }
+                companions -= int(p.moved.size()) - 1;
                 ctx->cells.erase(p.buf->name);
                 if (buf_out)
                     erase_net(buf_out);
@@ -688,6 +776,10 @@ void XilinxImpl::fixup_hold()
         timing_analysis(ctx, true /*slack_histogram*/, true /*print_fmax*/, false /*print_path*/,
                         true /*warn_on_failure*/, true /*update_results*/);
         total_detours += detoured;
+        const bool ports_moved_with_a_buffer = companions > 0;
+        if (ports_moved_with_a_buffer)
+            log_info("Hold-fix pass %d: %d port(s) moved onto a buffer with the arc whose wires they share.\n", pass,
+                     companions);
         log_info("Hold-fix pass %d: %d detour(s), %d feedthrough buffer(s); %zu hold violation(s) remain.\n", pass,
                  detoured, placed, ctx->timing_result.min_delay_violations.size());
         bool pass_changed_nothing = detoured == 0 && placed == 0;
