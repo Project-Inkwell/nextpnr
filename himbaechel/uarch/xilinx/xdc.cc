@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <regex>
@@ -442,6 +443,12 @@ void XilinxImpl::parse_xdc(const std::string &filename)
                         log_error("create_clock -period '%s' is not a number (on line %d)\n",
                                   arguments.at(cursor).c_str(), lineno);
                     }
+                    // As in Vivado, the period is more than 0 ns: the timing analysis has no use for another one (and
+                    // std::stod also reads "nan" and "inf")
+                    const bool is_positive = std::isfinite(period) && period > 0;
+                    if (!is_positive)
+                        log_error("create_clock -period '%s' is not a positive number (on line %d)\n",
+                                  arguments.at(cursor).c_str(), lineno);
                     got_period = true;
                 } else
                     break;

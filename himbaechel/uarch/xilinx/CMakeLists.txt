@@ -29,6 +29,7 @@ set(TEST_SOURCES
     tests/fasm_test.cc
     tests/pack_test.cc
     tests/part_resources_test.cc
+    tests/xdc_test.cc
 )
 
 add_nextpnr_himbaechel_microarchitecture(${uarch}
