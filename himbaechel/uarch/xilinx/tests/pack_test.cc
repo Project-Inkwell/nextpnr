@@ -170,6 +170,71 @@ TEST_F(XilinxPackTest, cells_ibufgds_alias)
     EXPECT_NE(ci->ports.count(id_O), size_t(0));
 }
 
+// An IBUFGDS on two top-level ports, clk_p and clk_n, as yosys leaves them.
+static std::pair<CellInfo *, CellInfo *> create_diff_input(Context *ctx)
+{
+    auto top_port = [&](const char *name) {
+        CellInfo *io = ctx->createCell(ctx->id(name), ctx->id("$nextpnr_ibuf"));
+        io->addOutput(id_O);
+        io->connectPort(id_O, ctx->createNet(ctx->id(name)));
+        return io;
+    };
+    CellInfo *p_port = top_port("clk_p");
+    CellInfo *n_port = top_port("clk_n");
+    CellInfo *buf = ctx->createCell(ctx->id("ib"), id_IBUFGDS);
+    buf->addInput(id_I);
+    buf->addInput(id_IB);
+    buf->addOutput(id_O);
+    buf->connectPort(id_I, ctx->nets.at(ctx->id("clk_p")).get());
+    buf->connectPort(id_IB, ctx->nets.at(ctx->id("clk_n")).get());
+    return std::make_pair(p_port, n_port);
+}
+
+// The two ports of a differential pair share one standard, and the XDC may give
+// it to either of them, as Vivado takes it. Here only the N port has it: with
+// the P port alone on a package pin, the N port goes on the other pin of the
+// pair, and the P port takes the N port's standard (every pad needs one).
+TEST_F(XilinxPackTest, diff_pair_takes_the_standard_of_the_port_without_a_pin)
+{
+    auto ports = create_diff_input(ctx);
+    ports.first->attrs[id_PACKAGE_PIN] = std::string("E3");
+    ports.second->attrs[id_IOSTANDARD] = std::string("DIFF_SSTL15");
+    XC7Packer p(ctx, xil);
+    p.pack_constants();
+    p.pack_io();
+    const CellInfo *pad_p = ctx->cells.at(ctx->id("clk_p")).get();
+    const CellInfo *pad_n = ctx->cells.at(ctx->id("clk_n")).get();
+    EXPECT_EQ(str_or_default(pad_n->attrs, id_PACKAGE_PIN, ""), "D3");
+    EXPECT_EQ(str_or_default(pad_p->attrs, id_IOSTANDARD, ""), "DIFF_SSTL15");
+    EXPECT_EQ(str_or_default(pad_n->attrs, id_IOSTANDARD, ""), "DIFF_SSTL15");
+}
+
+// The same with both ports on their pins.
+TEST_F(XilinxPackTest, diff_pair_on_two_pins_takes_the_standard_of_either_port)
+{
+    auto ports = create_diff_input(ctx);
+    ports.first->attrs[id_PACKAGE_PIN] = std::string("E3");
+    ports.second->attrs[id_PACKAGE_PIN] = std::string("D3");
+    ports.second->attrs[id_IOSTANDARD] = std::string("DIFF_SSTL15");
+    XC7Packer p(ctx, xil);
+    p.pack_constants();
+    p.pack_io();
+    EXPECT_EQ(str_or_default(ctx->cells.at(ctx->id("clk_p"))->attrs, id_IOSTANDARD, ""), "DIFF_SSTL15");
+}
+
+// Two different standards on the two ports are an error: decomposing the buffer
+// mixed them, and Vivado keeps the one set last, which the netlist cannot say.
+TEST_F(XilinxPackTest, diff_pair_with_two_standards_is_an_error)
+{
+    auto ports = create_diff_input(ctx);
+    ports.first->attrs[id_PACKAGE_PIN] = std::string("E3");
+    ports.first->attrs[id_IOSTANDARD] = std::string("DIFF_SSTL15");
+    ports.second->attrs[id_IOSTANDARD] = std::string("DIFF_HSTL_I");
+    XC7Packer p(ctx, xil);
+    p.pack_constants();
+    EXPECT_THROW(p.pack_io(), log_execution_error_exception);
+}
+
 // Helper: create an SRLC32E with the ports a real (yosys) design carries.
 static CellInfo *create_srlc32e(Context *ctx, const char *name)
 {
