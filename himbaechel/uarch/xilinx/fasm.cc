@@ -1657,6 +1657,24 @@ struct FasmBackend
                     write_bit("LVCMOS12_LVCMOS15_LVCMOS18_LVCMOS25_LVCMOS33_LVDS_25_LVTTL_SSTL135_SSTL15_TMDS_33.IN_"
                               "ONLY");
             }
+
+            // IBUFDISABLE.I and INTERMDISABLE.I are site features, not pips.
+            // The route into the IOI does not set them. Vivado sets each on
+            // every half whose input buffer has that port connected.
+            CellInfo *pad_inbuf = nullptr;
+            for (auto &usr : pad_net->users) {
+                const bool user_is_inbuf = boost::contains(usr.cell->type.str(ctx), "INBUF");
+                const bool on_pad_port = usr.port == id_PAD;
+                const bool this_pad_inbuf = user_is_inbuf && on_pad_port;
+                if (this_pad_inbuf)
+                    pad_inbuf = usr.cell;
+            }
+            const bool disable_is_used = pad_inbuf != nullptr && pad_inbuf->getPort(id_IBUFDISABLE) != nullptr;
+            if (disable_is_used)
+                write_bit("IBUFDISABLE.I");
+            const bool interm_is_used = pad_inbuf != nullptr && pad_inbuf->getPort(id_INTERMDISABLE) != nullptr;
+            if (interm_is_used)
+                write_bit("INTERMDISABLE.I");
         }
 
         // STEPDOWN is a left-hand HP feature: segbits_riob18.db defines no
