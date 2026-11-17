@@ -2339,8 +2339,10 @@ PlacerHeapCfg::PlacerHeapCfg(Context *ctx)
         // be shaved down, but for now it will keep the process from running indefinite.
         // In 64 bits: cells^2 overflows an int past ~46k cells, and the wrapped
         // (often negative) value made the limit the 10000 floor, whatever the divisor.
-        const int64_t n = int64_t(ctx->cells.size());
-        const int64_t limit = std::min<int64_t>(n * n / timeout_divisor, std::numeric_limits<int>::max());
+        // n is capped where n^2 would overflow 64 bits too, and the limit stays below
+        // INT_MAX so the int attempt counter can exceed it before it would wrap.
+        const int64_t n = std::min<int64_t>(int64_t(ctx->cells.size()), 3037000499LL);
+        const int64_t limit = std::min<int64_t>(n * n / timeout_divisor, std::numeric_limits<int>::max() - 1);
         cell_placement_timeout = std::max(10000, int(limit));
     } else {
         cell_placement_timeout = 0;
