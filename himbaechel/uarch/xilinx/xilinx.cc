@@ -902,12 +902,17 @@ void XilinxImpl::apply_preplaced(bool verbose)
                  pinned, missing, int(frozen_tiles.size()));
 }
 
-// -o holdbufs=<file>: one line per hold-fix feedthrough buffer of the
-// reference build, "<cell>\t<input net>\t<output net>\t<sink cell>\t<sink port>"
-// (scripts/routing_dump.py writes it).  Each is re-created here, before
-// placement, exactly as fixup_hold() makes them, so the reference's bels
-// and routes name only cells and nets this design has; the hold-fix then
-// finds nothing to do on the replayed part.
+// -o holdbufs=<file>: one line per port a hold-fix feedthrough buffer of the
+// reference build feeds, "<cell>\t<input net>\t<output net>\t<sink cell>\t<sink port>"
+// (scripts/routing_dump.py writes it).  Each buffer is re-created here, before
+// placement, exactly as fixup_hold() makes them, and a buffer named again by a
+// later line takes that port too, as the hold-fix moved the ports sharing a
+// wire with the violating sink onto one buffer.  A buffer fed by another
+// buffer's output (a later pass buffered the first again) waits for that
+// one, whatever the file's order, and the first is made without a port of
+// its own when the second is all it feeds.  So the
+// reference's bels and routes name only cells and nets this design has, and
+// the hold-fix then finds nothing to do on the replayed part.
 void XilinxImpl::apply_holdbufs()
 {
     const ArchArgs &args = ctx->args;
@@ -917,33 +922,20 @@ void XilinxImpl::apply_holdbufs()
     std::ifstream in(path);
     if (!in)
         log_error("cannot read holdbufs file '%s'\n", path.c_str());
-    int made = 0, skipped = 0;
+    std::vector<std::vector<std::string>> records;
     std::string line;
     while (std::getline(in, line)) {
         std::vector<std::string> f;
         boost::split(f, line, boost::is_any_of("\t"));
-        const bool record_is_malformed = (f.size() != 5);
-        if (record_is_malformed)
-            continue;
-        IdString buf_name = ctx->id(f[0]), in_net = ctx->id(f[1]), out_net = ctx->id(f[2]), sink_name = ctx->id(f[3]),
-                 sink_port = ctx->id(f[4]);
-        const bool buffer_is_not_as_in_the_reference = !ctx->nets.count(in_net) || !ctx->cells.count(sink_name) ||
-                                                       ctx->cells.count(buf_name) != 0 || ctx->nets.count(out_net) != 0;
-        if (buffer_is_not_as_in_the_reference) {
-            log_info("holdbufs: %s skipped (net %s, sink %s: not as in the reference)\n", f[0].c_str(), f[1].c_str(),
-                     f[3].c_str());
-            skipped++;
-            continue;
-        }
-        NetInfo *net = ctx->nets.at(in_net).get();
-        CellInfo *sink = ctx->cells.at(sink_name).get();
-        const bool sink_port_is_not_on_that_net = (sink->getPort(sink_port) != net);
-        if (sink_port_is_not_on_that_net) {
-            log_info("holdbufs: %s skipped (%s.%s is not on %s)\n", f[0].c_str(), f[3].c_str(), f[4].c_str(),
-                     f[1].c_str());
-            skipped++;
-            continue;
-        }
+        const bool record_is_well_formed = (f.size() == 5);
+        if (record_is_well_formed)
+            records.push_back(f);
+    }
+    int made = 0, joined = 0, skipped = 0;
+    pool<IdString> buffers_of_the_file;
+    for (const auto &f : records)
+        buffers_of_the_file.insert(ctx->id(f[0]));
+    auto make_buffer = [&](IdString buf_name, NetInfo *net, IdString out_net) {
         NetInfo *buf_out = ctx->createNet(out_net);
         CellInfo *buf = ctx->createCell(buf_name, id_SLICE_LUTX);
         buf->addInput(id_A1);
@@ -954,11 +946,90 @@ void XilinxImpl::apply_holdbufs()
         buf->attrs[ctx->id("X_ORIG_PORT_O6")] = std::string("O");
         buf->connectPort(id_A1, net);
         buf->connectPort(id_O6, buf_out);
-        sink->disconnectPort(sink_port);
-        sink->connectPort(sink_port, buf_out);
         made++;
+        return buf_out;
+    };
+    // A record whose input net is not there yet may name another buffer's output: keep going round while a
+    // round makes progress, and skip what is left.
+    std::vector<bool> done(records.size(), false);
+    bool progress = true;
+    while (progress) {
+        progress = false;
+        for (size_t i = 0; i < records.size(); i++) {
+            const bool record_is_done = done[i];
+            if (record_is_done)
+                continue;
+            const std::vector<std::string> &f = records[i];
+            IdString buf_name = ctx->id(f[0]), in_net = ctx->id(f[1]), out_net = ctx->id(f[2]),
+                     sink_name = ctx->id(f[3]), sink_port = ctx->id(f[4]);
+            const bool input_net_is_not_there_yet = ctx->nets.count(in_net) == 0;
+            if (input_net_is_not_there_yet)
+                continue;
+            done[i] = true;
+            CellInfo *buf = ctx->cells.count(buf_name) ? ctx->cells.at(buf_name).get() : nullptr;
+            NetInfo *buf_out = ctx->nets.count(out_net) ? ctx->nets.at(out_net).get() : nullptr;
+            NetInfo *net = ctx->nets.at(in_net).get();
+            const bool buffer_is_from_an_earlier_line = buf != nullptr && buf_out != nullptr &&
+                                                        buf->getPort(id_A1) == net && buf->getPort(id_O6) == buf_out;
+            const bool buffer_is_taken_by_something_else =
+                    !buffer_is_from_an_earlier_line && (buf != nullptr || buf_out != nullptr);
+            // The sink is a buffer this file makes later, on this one's output: that one connects its own input
+            // when it is made, so this one only has to exist.
+            const bool sink_is_a_buffer_of_the_file = buffers_of_the_file.count(sink_name) != 0;
+            if (sink_is_a_buffer_of_the_file && !buffer_is_taken_by_something_else) {
+                const bool buffer_is_still_to_make = !buffer_is_from_an_earlier_line;
+                if (buffer_is_still_to_make)
+                    make_buffer(buf_name, net, out_net);
+                progress = true;
+                continue;
+            }
+            const bool sink_exists = ctx->cells.count(sink_name) != 0;
+            const bool buffer_is_not_as_in_the_reference = !sink_exists || buffer_is_taken_by_something_else;
+            if (buffer_is_not_as_in_the_reference) {
+                log_info("holdbufs: %s skipped (net %s, sink %s: not as in the reference)\n", f[0].c_str(),
+                         f[1].c_str(), f[3].c_str());
+                skipped++;
+                continue;
+            }
+            CellInfo *sink = ctx->cells.at(sink_name).get();
+            // The port is on the input net, or on a net further up a chain of the file's buffers (a later pass
+            // buffered the first buffer again, and the reference lists the port on the last one only).
+            NetInfo *port_net = sink->getPort(sink_port);
+            NetInfo *up = net;
+            bool port_is_up_the_chain = false;
+            while (up != nullptr && !port_is_up_the_chain) {
+                port_is_up_the_chain = (port_net == up);
+                CellInfo *drv = up->driver.cell;
+                const bool driven_by_a_buffer_of_the_file = drv != nullptr && buffers_of_the_file.count(drv->name) != 0;
+                up = driven_by_a_buffer_of_the_file ? drv->getPort(id_A1) : nullptr;
+            }
+            const bool sink_port_is_not_on_that_net = !port_is_up_the_chain;
+            if (sink_port_is_not_on_that_net) {
+                log_info("holdbufs: %s skipped (%s.%s is not on %s)\n", f[0].c_str(), f[3].c_str(), f[4].c_str(),
+                         f[1].c_str());
+                skipped++;
+                continue;
+            }
+            const bool buffer_is_already_made = buffer_is_from_an_earlier_line;
+            if (buffer_is_already_made)
+                joined++;
+            else
+                buf_out = make_buffer(buf_name, net, out_net);
+            sink->disconnectPort(sink_port);
+            sink->connectPort(sink_port, buf_out);
+            progress = true;
+        }
     }
-    log_info("Hold buffers: %d re-created from the reference, %d skipped.\n", made, skipped);
+    for (size_t i = 0; i < records.size(); i++) {
+        const bool record_is_done = done[i];
+        if (record_is_done)
+            continue;
+        log_info("holdbufs: %s skipped (net %s is not in this design)\n", records[i][0].c_str(),
+                 records[i][1].c_str());
+        skipped++;
+    }
+    log_info("Hold buffers: %d re-created from the reference, %d further port(s) moved onto them, %d skipped.\n", made,
+             joined, skipped);
     const bool some_buffer_was_re_created = made != 0;
     if (some_buffer_was_re_created) {
         ctx->assignArchInfo();
