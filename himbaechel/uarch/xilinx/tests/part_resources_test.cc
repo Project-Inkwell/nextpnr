@@ -82,12 +82,13 @@ TEST_F(XilinxPartResourcesTest, csg324_counts_its_bonded_io)
 {
     for (auto device : {"xc7a35tcsg324-1", "xc7a50tcsg324-1"}) {
         auto n = counted(device);
-        // 210 bonded IOBs, plus the XADC's VP and VN pads
         EXPECT_EQ(n[id_IOB33_INBUF_EN], 210) << device;
         EXPECT_EQ(n[id_IOB33_OUTBUF], 210) << device;
         EXPECT_EQ(n[id_ILOGICE3_IFF], 210) << device;
         EXPECT_EQ(n[id_OLOGICE3_OUTFF], 210) << device;
-        EXPECT_EQ(n[id_PAD], 212) << device;
+        // User I/O only. The two XADC pads are bonded IPAD sites and are
+        // not in this row.
+        EXPECT_EQ(n[id_PAD], 210) << device;
         // every IDELAY counts, bonded or not, as in Vivado
         EXPECT_EQ(n[id_IDELAYE2], 250) << device;
     }
@@ -96,8 +97,8 @@ TEST_F(XilinxPartResourcesTest, csg324_counts_its_bonded_io)
 // The JSON report is what apio reads. Cells on a type whose bels are all
 // hidden (the constant drivers) must not appear as used with nothing
 // available. These two are created and not placed, so they count as their
-// type. A placed cell counts on the bel it occupies. PAD stays the
-// bonded-pad count, VP and VN included.
+// type. A placed cell counts on the bel it occupies. PAD is the user I/O,
+// not the XADC pads.
 TEST_F(XilinxPartResourcesTest, report_used_stays_within_available)
 {
     ArchArgs chipArgs;
@@ -160,7 +161,7 @@ TEST_F(XilinxPartResourcesTest, report_used_stays_within_available)
             saw_ff = true;
         }
         if (name == "PAD") {
-            EXPECT_EQ(available, 212);
+            EXPECT_EQ(available, 210);
             saw_pad = true;
         }
         if (name == "IOB33_INBUF_EN") {
@@ -222,4 +223,92 @@ TEST_F(XilinxPartResourcesTest, report_counts_a_placed_cell_on_its_bel)
     const bool hr_outff_listed = rows.count("OLOGICE3_OUTFF") != 0;
     if (hr_outff_listed)
         EXPECT_EQ(rows.at("OLOGICE3_OUTFF").second, 0);
+}
+
+namespace {
+std::map<std::string, std::pair<int, int>> utilization_rows(Context &ctx)
+{
+    std::ostringstream out;
+    ctx.writeJsonReport(out);
+    const std::string text = out.str();
+    std::map<std::string, std::pair<int, int>> rows;
+    const std::regex row("\"([A-Za-z0-9_]+)\": \\{\"available\": (-?[0-9]+), \"used\": (-?[0-9]+)\\}");
+    for (auto it = std::sregex_iterator(text.begin(), text.end(), row); it != std::sregex_iterator(); ++it)
+        rows[(*it)[1].str()] = std::make_pair(std::stoi((*it)[2].str()), std::stoi((*it)[3].str()));
+    return rows;
+}
+
+std::string site_prefix_of(Context &ctx, BelId bel)
+{
+    XilinxImpl *xi = static_cast<XilinxImpl *>(ctx.uarch.get());
+    SiteIndex site = xi->get_bel_site(bel);
+    const auto *extra = xi->tile_extra_data(site.tile);
+    const bool site_ok = extra != nullptr && site.site >= 0 && site.site < extra->sites.ssize();
+    if (!site_ok)
+        return std::string();
+    return IdString(extra->sites[site.site].name_prefix).str(&ctx);
+}
+} // namespace
+
+// PAD available is the user I/O: the IOB input buffers, HR and HP together.
+// On Artix that drops the GTP and XADC pads. On Spartan-7 and Zynq it was
+// already that count. Kintex GTX pads are IPAD and OPAD sites too.
+TEST_F(XilinxPartResourcesTest, pad_available_is_the_user_io)
+{
+    const char *devices[] = {"xc7a35tcsg324-1", "xc7a35tcpg236-1", "xc7a100tfgg676-1",
+                             "xc7s50csga324-1", "xc7z010clg400-1", "xc7k325tffg676-1"};
+    for (const char *device : devices) {
+        auto n = counted(device);
+        const int user_io = n[id_IOB33_INBUF_EN] + n[id_IOB18_INBUF_DCIEN];
+        EXPECT_EQ(n[id_PAD], user_io) << device;
+        EXPECT_GT(user_io, 0) << device;
+    }
+    auto cpg236 = counted("xc7a35tcpg236-1");
+    EXPECT_EQ(cpg236[id_PAD], 106);
+    EXPECT_EQ(cpg236[id_IOB33_INBUF_EN], 106);
+}
+
+// The PAD row of the used count is the cells on PAD bels, hidden or not: the
+// report counts a placed cell on the bucket of the bel it occupies. A cell
+// on the PAD bel of an IPAD or OPAD site (a GTP pad or the XADC VP/VN pair on
+// Artix-7) therefore counts as PAD used, while PAD available leaves that bel
+// out. The bel itself stays placeable.
+TEST_F(XilinxPartResourcesTest, a_used_gtp_or_xadc_pad_counts_in_pad_used)
+{
+    for (const char *device : {"xc7a35tcsg324-1", "xc7a35tcpg236-1"}) {
+        ArchArgs chipArgs;
+        chipArgs.device = device;
+        Context ctx(chipArgs);
+        ctx.uarch->init(&ctx);
+        ctx.late_init();
+        BelId special = BelId();
+        BelId user = BelId();
+        for (auto bel : ctx.getBels()) {
+            const bool is_pad = ctx.getBelType(bel) == id_PAD;
+            if (!is_pad)
+                continue;
+            const std::string prefix = site_prefix_of(ctx, bel);
+            const bool first_special = (prefix == "IPAD" || prefix == "OPAD") && special == BelId();
+            if (first_special)
+                special = bel;
+            const bool first_user = prefix == "IOB" && !ctx.getBelHidden(bel) && user == BelId();
+            if (first_user)
+                user = bel;
+        }
+        ASSERT_NE(special, BelId()) << device;
+        ASSERT_NE(user, BelId()) << device;
+        EXPECT_TRUE(ctx.getBelHidden(special)) << device;
+        EXPECT_FALSE(ctx.getBelHidden(user)) << device;
+        auto before = utilization_rows(ctx);
+        ASSERT_EQ(before.count("PAD"), 1u) << device;
+        EXPECT_EQ(before.at("PAD").second, 0) << device;
+        ctx.bindBel(special, ctx.createCell(ctx.id("special_pad"), id_PAD), STRENGTH_LOCKED);
+        auto rows = utilization_rows(ctx);
+        // The available count does not move, the used count does.
+        EXPECT_EQ(rows.at("PAD").first, before.at("PAD").first) << device;
+        EXPECT_EQ(rows.at("PAD").second, 1) << device;
+        ctx.bindBel(user, ctx.createCell(ctx.id("user_pad"), id_PAD), STRENGTH_LOCKED);
+        rows = utilization_rows(ctx);
+        EXPECT_EQ(rows.at("PAD").second, 2) << device;
+    }
 }

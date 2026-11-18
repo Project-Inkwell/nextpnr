@@ -27,6 +27,12 @@
 //  - the IOB sites, and the ILOGIC/OLOGIC sites next to them, were the die's,
 //    not the ones the package bonds (an xc7a35tcsg324 bonds 210 of 250), and
 //    the pad of an IOB that can be half of a pair counted twice (512 pads);
+//  - on Artix-7 the bonded IPAD and OPAD sites (GTP data, GTP reference
+//    clocks, and the XADC VP/VN) were counted with the user I/O. Kintex
+//    GTX pads are the same two site kinds. Spartan-7 and Zynq already
+//    count user I/O only. A design that places a cell on one of those
+//    pads still adds it to the used count of the row, which is taken from
+//    the bel a cell occupies;
 //  - a device on a bigger device's die (an xc7a35t is an xc7a50t,
 //    init_database) offers fewer LUTs, flip-flops, block RAMs and DSPs than
 //    the die has, and had no limit at all: a design that does not fit an
@@ -84,14 +90,21 @@ void XilinxImpl::init_part_resources()
             const std::string &prefix = IdString(site_data.name_prefix).str(ctx);
             const bool is_pad_site = prefix == "IOB" || prefix == "IPAD" || prefix == "OPAD" || prefix == "IOPAD";
             const bool is_iologic_site = prefix == "ILOGIC" || prefix == "OLOGIC";
+            const bool is_pad_bel = ctx->getBelType(bel) == id_PAD;
             const bool pad_site_not_bonded = is_pad_site && !bonded_sites.count(site);
             const bool iologic_of_an_unbonded_iob =
                     is_iologic_site && !bonded_iob_xy.count({site_data.site_x, site_data.site_y});
             // An IOB site that can be half of a differential pair has a PAD
             // bel in each of its variants (IOB33 and IOB33M, say): one pad.
             const int variant = BelSiteKey::unpack(chip_bel_info(ctx->chip_info, bel).site).site_variant;
-            const bool pad_of_a_second_variant = is_pad_site && variant != 0 && ctx->getBelType(bel) == id_PAD;
-            if (pad_site_not_bonded || iologic_of_an_unbonded_iob || pad_of_a_second_variant) {
+            const bool pad_of_a_second_variant = is_pad_site && variant != 0 && is_pad_bel;
+            // GTP, GTX and the XADC VP/VN live on IPAD and OPAD sites. They
+            // are bonded, and they are not user I/O. A Zynq IOPAD is a PS
+            // pad; the fabric count already leaves those out.
+            const bool pad_is_not_user_io = is_pad_bel && (prefix == "IPAD" || prefix == "OPAD");
+            const bool leave_this_bel_uncounted = pad_site_not_bonded || iologic_of_an_unbonded_iob ||
+                                                  pad_of_a_second_variant || pad_is_not_user_io;
+            if (leave_this_bel_uncounted) {
                 uncounted_bels.insert(bel);
                 continue;
             }
