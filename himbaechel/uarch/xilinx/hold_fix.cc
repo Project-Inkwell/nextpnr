@@ -26,6 +26,7 @@
  *  of passes, 8 by default).
  */
 
+#include <functional>
 #include <queue>
 
 #include "log.h"
@@ -387,18 +388,56 @@ void XilinxImpl::fixup_hold()
         ctx->net_aliases.erase(name);
     };
 
-    // The wires an arc to `usr` has to use: its sink wire and, above it, each wire with a single driver, which is
-    // what router2 reserves for the arc (reserve_sink_wires_for_arc).  Ports whose chains share a wire must stay
-    // on one net.
-    auto sink_chain = [this](const NetInfo *net, const PortRef &usr) {
+    // What router2's is_wire_undriveable knows of the graph: a wire is driveable when the net's own driver bel has
+    // an output pin on it, or an available pip leads into it from a driveable wire, assumed past seven steps.  What
+    // else that test reads, the other nets' reservations, is router2's own state.  The net's own routing is still
+    // bound here and is ripped up before the reroute, so a pip it holds counts as available.
+    auto wire_is_undriveable = [this](const NetInfo *net, WireId wire) {
+        std::function<bool(WireId, int)> walk = [&](WireId w, int depth) -> bool {
+            const bool deep_in_general_routing = depth > 7;
+            if (deep_in_general_routing)
+                return false;
+            for (auto bp : ctx->getWireBelPins(w)) {
+                const bool pin_is_the_drivers = net->driver.cell == nullptr || bp.bel == net->driver.cell->bel;
+                const bool pin_is_an_output = ctx->getBelPinType(bp.bel, bp.pin) != PORT_IN;
+                if (pin_is_the_drivers && pin_is_an_output)
+                    return false;
+            }
+            for (PipId p : ctx->getPipsUphill(w)) {
+                const bool pip_is_available = ctx->checkPipAvailForNet(p, net);
+                if (!pip_is_available)
+                    continue;
+                const bool source_is_driveable = !walk(ctx->getPipSrcWire(p), depth + 1);
+                if (source_is_driveable)
+                    return false;
+            }
+            return true;
+        };
+        return walk(wire, 0);
+    };
+
+    // The wires an arc to `usr` has to use: its sink wire and, above it, each wire with a single driveable source,
+    // up to the net's source wire, which is what router2 reserves for the arc (reserve_sink_wires_for_arc).  Ports
+    // whose chains share a wire must stay on one net.
+    auto sink_chain = [this, &wire_is_undriveable](const NetInfo *net, const PortRef &usr) {
         std::vector<WireId> chain;
+        const WireId source = ctx->getNetinfoSourceWire(net);
+        pool<WireId> visited;
         WireId cursor = ctx->getNetinfoSinkWire(net, usr, 0);
-        for (int guard = 0; guard < 16 && cursor != WireId(); guard++) {
+        while (cursor != WireId() && !visited.count(cursor)) {
+            visited.insert(cursor);
             chain.push_back(cursor);
+            const bool reached_the_source = cursor == source;
+            if (reached_the_source)
+                break;
             WireId above;
             int drivers = 0;
             for (PipId p : ctx->getPipsUphill(cursor)) {
-                above = ctx->getPipSrcWire(p);
+                const WireId w = ctx->getPipSrcWire(p);
+                const bool nothing_drives_it = wire_is_undriveable(net, w);
+                if (nothing_drives_it)
+                    continue;
+                above = w;
                 drivers++;
                 const bool more_than_one_driver = drivers > 1;
                 if (more_than_one_driver)
@@ -430,7 +469,7 @@ void XilinxImpl::fixup_hold()
             delay_t extra;
         };
         std::vector<Target> targets;
-        pool<std::string> seen;
+        dict<std::string, size_t> target_of_key; // the target that fixes each wire
         for (const auto &cp : violations) {
             const CriticalPath::Segment *last_routing = nullptr;
             delay_t sum = 0;
@@ -444,7 +483,7 @@ void XilinxImpl::fixup_hold()
             // Several ports can hang off one wire that router2 reserves for the arc (a 5LUT and a 6LUT in one
             // position; in a SLICEM the write-address pins of all four LUTs; WA7 and WA8 behind the CX and BX
             // bypass pins), so one short arc is reported once per port: key the target by the top of that chain
-            // where there is one, and the wire is fixed once.
+            // where there is one, and the wire is fixed once, for the largest deficit reported on it.
             std::string key = last_routing->to.first.str(ctx) + "/" + last_routing->to.second.str(ctx);
             {
                 auto cit = ctx->cells.find(last_routing->to.first);
@@ -463,10 +502,16 @@ void XilinxImpl::fixup_hold()
                         key = ctx->nameOfWire(chain.back());
                 }
             }
-            if (seen.count(key))
-                continue;
-            seen.insert(key);
             delay_t extra = (sum < 0 ? -sum : delay_t(0)) + detour_margin;
+            auto existing = target_of_key.find(key);
+            const bool the_wire_already_has_a_target = existing != target_of_key.end();
+            if (the_wire_already_has_a_target) {
+                // another port of the same wire: what fixes the wire must clear the largest deficit among them
+                Target &first = targets.at(existing->second);
+                first.extra = std::max(first.extra, extra);
+                continue;
+            }
+            target_of_key[key] = targets.size();
             targets.push_back({last_routing->net, last_routing->to.first, last_routing->to.second, extra});
         }
         if (targets.empty())

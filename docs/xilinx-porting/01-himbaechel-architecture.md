@@ -266,6 +266,15 @@ is a line-based, regex/`boost::split` parser supporting a narrow subset:
   logic are grouped and re-placed around their consumers with the delay matrix and the clock
   tree as the cost, then the lifted logic is placed again; `-o bram-place=on|off|force`, on by
   default only on dies with a calibrated clock tree.
+- **Hold repair** (`hold_fix.cc`, `-o hold-fix`): after routing, each min-delay violation is
+  cleared by a routing detour (deficits up to `-o hold-detour-max`, 0.5 ns by default) or by a
+  feedthrough LUT1 placed in an empty tile near the sink, and the touched nets are rerouted by
+  router2. A buffer takes every port of its net whose arc must use a wire of the violating
+  sink's (the sink wire and the single-driver wires above it, which router2 reserves per arc):
+  a 5LUT/6LUT pair's inputs, the write address of all four LUT RAMs of a SLICEM, WA7/WA8
+  behind the CX/BX bypass pins; the reports on one such wire are one target, fixed for the
+  largest deficit among them. `-o holdbufs=<file>` re-creates a reference build's buffers
+  before placement, one line per port a buffer feeds.
 - **Derived constraints**: `generate_constraints` (`pack_clocking.cc:384-535`) propagates
   `create_clock` periods through BUFGCTRL/IBUF/PLL/MMCM, computing VCO and output-clock
   frequencies for downstream timing analysis.
