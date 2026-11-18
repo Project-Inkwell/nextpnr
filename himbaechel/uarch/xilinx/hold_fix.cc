@@ -400,12 +400,14 @@ void XilinxImpl::fixup_hold()
             for (auto bp : ctx->getWireBelPins(w)) {
                 const bool pin_is_the_drivers = net->driver.cell == nullptr || bp.bel == net->driver.cell->bel;
                 const bool pin_is_an_output = ctx->getBelPinType(bp.bel, bp.pin) != PORT_IN;
-                if (pin_is_the_drivers && pin_is_an_output)
+                const bool driver_output_is_on_the_wire = pin_is_the_drivers && pin_is_an_output;
+                if (driver_output_is_on_the_wire)
                     return false;
             }
             for (PipId p : ctx->getPipsUphill(w)) {
                 const bool pip_is_available = ctx->checkPipAvailForNet(p, net);
-                if (!pip_is_available)
+                const bool pip_is_not_available = !pip_is_available;
+                if (pip_is_not_available)
                     continue;
                 const bool source_is_driveable = !walk(ctx->getPipSrcWire(p), depth + 1);
                 if (source_is_driveable)
@@ -444,7 +446,8 @@ void XilinxImpl::fixup_hold()
                     break;
             }
             const bool single_driver = drivers == 1;
-            if (!single_driver)
+            const bool there_is_not_a_single_driver = !single_driver;
+            if (there_is_not_a_single_driver)
                 break;
             cursor = above;
         }
@@ -617,7 +620,8 @@ void XilinxImpl::fixup_hold()
                     if (is_the_sink_port)
                         continue;
                     const bool user_is_placed = u.cell != nullptr && u.cell->bel != BelId();
-                    if (!user_is_placed)
+                    const bool user_is_not_placed = !user_is_placed;
+                    if (user_is_not_placed)
                         continue;
                     int shared_wires = 0;
                     for (WireId w : sink_chain(net, u))
@@ -689,7 +693,8 @@ void XilinxImpl::fixup_hold()
                 p.buf->disconnectPort(id_O6);
                 for (const PortRef &pr : p.moved) {
                     const bool port_is_on_the_buffer = pr.cell->getPort(pr.port) == buf_out;
-                    if (!port_is_on_the_buffer)
+                    const bool port_is_not_on_the_buffer = !port_is_on_the_buffer;
+                    if (port_is_not_on_the_buffer)
                         continue;
                     pr.cell->disconnectPort(pr.port);
                     const bool the_original_net_exists = orig != nullptr;
