@@ -38,7 +38,7 @@ env:
   # carrying the cases.  Fixed revisions, because the chipdb decides what the
   # cases do.
   PRJXRAY_DB_REV: a8b09269beb6e3d3c07e2a0901f845420df1c802
-  DEMO_PROJECTS_REV: dee7869d5ab026dddb951f2367397c45c9d68eba
+  DEMO_PROJECTS_REV: 9c28da3ed04f2cbce13c49fd9fa7f30cdc30d5a9
 
 jobs:
   regression:
@@ -114,6 +114,8 @@ jobs:
           cp chipdb-xc7a200t.bin  ../../../../run/chipdb/xc7a200tfbg484.bin
           cp chipdb-xc7z010.bin   ../../../../run/chipdb/xc7z010clg400.bin
           cp chipdb-xc7a50t.bin   ../../../../run/chipdb/xc7a35tcsg324.bin
+          # pad-user-io is an xc7a35tcpg236: the same xc7a50t die, another package.
+          cp chipdb-xc7a50t.bin   ../../../../run/chipdb/xc7a35tcpg236.bin
           cd ../../../../run
           install -m 755 ../nextpnr/.github/scripts/nextpnr-xilinx-shim.sh bin/nextpnr-xilinx
           ls -la bin chipdb
@@ -142,7 +144,8 @@ jobs:
           # Then #191 (report-used-within-available), #192 (bel-attribute),
           # #193 (xdc-skipped-targets), #194 (diff-pair-n-from-package),
           # #187 (carry-lut-pair-const-inputs) and #204 (ibufds-diff-out,
-          # iob-primitive-unpacked).
+          # iob-primitive-unpacked). The last name is pad-user-io: the PAD row
+          # counts user I/O only, and part-utilisation expects that count.
           demo-projects/regression/run.sh \
             clock-srcc-bufg bram-sdp-unused-port bufg-fabric-driven \
             config-primitive-startupe2 iddr-four-iff-flops \
@@ -165,7 +168,8 @@ jobs:
             report-used-within-available \
             bel-attribute xdc-skipped-targets diff-pair-n-from-package \
             carry-lut-pair-const-inputs \
-            ibufds-diff-out iob-primitive-unpacked
+            ibufds-diff-out iob-primitive-unpacked \
+            pad-user-io
 
       # Failing today, on purpose and by name.  These three cases are a gap of
       # this engine alone, with no counterpart in the fork; PR #56 is still open.
