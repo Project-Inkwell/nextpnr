@@ -976,7 +976,8 @@ void XilinxImpl::apply_holdbufs()
             // The sink is a buffer this file makes later, on this one's output: that one connects its own input
             // when it is made, so this one only has to exist.
             const bool sink_is_a_buffer_of_the_file = buffers_of_the_file.count(sink_name) != 0;
-            if (sink_is_a_buffer_of_the_file && !buffer_is_taken_by_something_else) {
+            const bool buffer_can_be_the_sink = sink_is_a_buffer_of_the_file && !buffer_is_taken_by_something_else;
+            if (buffer_can_be_the_sink) {
                 const bool buffer_is_still_to_make = !buffer_is_from_an_earlier_line;
                 if (buffer_is_still_to_make)
                     make_buffer(buf_name, net, out_net);
@@ -1036,7 +1037,6 @@ void XilinxImpl::apply_holdbufs()
         assign_cell_tags();
     }
 }
-
 // With -o prerouted, the logic and block-RAM tiles a reference route passes
 // through are closed to new cells as well: a route-through LUT, or a block
 // RAM's address cascade used as a way in to the block RAM below, is a site

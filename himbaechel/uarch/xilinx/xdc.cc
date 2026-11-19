@@ -446,7 +446,8 @@ void XilinxImpl::parse_xdc(const std::string &filename)
                     // As in Vivado, the period is more than 0 ns: the timing analysis has no use for another one (and
                     // std::stod also reads "nan" and "inf")
                     const bool is_positive = std::isfinite(period) && period > 0;
-                    if (!is_positive)
+                    const bool is_not_positive = !is_positive;
+                    if (is_not_positive)
                         log_error("create_clock -period '%s' is not a positive number (on line %d)\n",
                                   arguments.at(cursor).c_str(), lineno);
                     got_period = true;
