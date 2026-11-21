@@ -1564,19 +1564,88 @@ SiteIndex XC7Packer::get_ologic_site_for_ilogic(SiteIndex ilogic_site)
     NPNR_ASSERT_FALSE("failed to find sibling OLOGIC site for ISERDESE2");
 }
 
+// Several IDELAYCTRLs, as when two interfaces each bring their own, become
+// one: the per-region copies made below serve every I/ODELAY anyway.  They
+// must share a REFCLK (telling them apart would need IODELAY_GROUP, which is
+// not supported); differing resets are ORed, so any of them resets the
+// copies, and every RDY is the AND of all the copies.  The first cell stands
+// for the others, whose names are kept in X_MERGED_IDELAYCTRLS for the
+// placement dump.
+void XC7Packer::merge_idelayctrls(const std::vector<CellInfo *> &idelayctrls)
+{
+    CellInfo *keep = idelayctrls.front();
+    NetInfo *refclk = keep->getPort(id_REFCLK);
+    for (CellInfo *other : idelayctrls)
+        if (other->getPort(id_REFCLK) != refclk)
+            log_error("IDELAYCTRL cells '%s' and '%s' have different REFCLK nets; several IDELAYCTRLs are only "
+                      "supported on a shared REFCLK (IODELAY_GROUP is not supported)\n",
+                      ctx->nameOf(keep), ctx->nameOf(other));
+
+    // A reset tied low resets nothing, so it does not take part in the OR.
+    std::vector<NetInfo *> resets;
+    for (CellInfo *ci : idelayctrls) {
+        NetInfo *rst = ci->getPort(id_RST);
+        bool resets_nothing = rst == nullptr || rst->name == ctx->id("$PACKER_GND_NET");
+        if (!resets_nothing && std::find(resets.begin(), resets.end(), rst) == resets.end())
+            resets.push_back(rst);
+    }
+    NetInfo *merged_rst = resets.empty() ? nullptr : resets.front();
+    for (size_t j = 1; j < resets.size(); j++) {
+        NetInfo *ored = create_internal_net(keep->name, "MERGED_RST_" + std::to_string(j), false);
+        create_lut(keep->name.str(ctx) + "/RST_OR_LUT_" + std::to_string(j), {merged_rst, resets.at(j)}, ored,
+                   Property(14));
+        merged_rst = ored;
+    }
+    if (merged_rst != nullptr && keep->getPort(id_RST) != merged_rst) {
+        keep->disconnectPort(id_RST);
+        keep->connectPort(id_RST, merged_rst);
+    }
+
+    NetInfo *rdy = keep->getPort(id_RDY);
+    std::vector<std::string> merged_names;
+    for (CellInfo *other : idelayctrls) {
+        if (other == keep)
+            continue;
+        merged_names.push_back(other->name.str(ctx));
+        NetInfo *other_rdy = other->getPort(id_RDY);
+        other->disconnectPort(id_RDY);
+        if (other_rdy == nullptr || other_rdy == rdy) {
+            // nothing to move
+        } else if (rdy == nullptr) {
+            keep->connectPort(id_RDY, other_rdy);
+            rdy = other_rdy;
+        } else {
+            std::vector<PortRef> users;
+            for (const PortRef &usr : other_rdy->users)
+                users.push_back(usr);
+            for (const PortRef &usr : users) {
+                usr.cell->disconnectPort(usr.port);
+                usr.cell->connectPort(usr.port, rdy);
+            }
+        }
+        other->disconnectPort(id_REFCLK);
+        other->disconnectPort(id_RST);
+        packed_cells.insert(other->name);
+    }
+    keep->attrs[ctx->id("X_MERGED_IDELAYCTRLS")] = boost::algorithm::join(merged_names, " ");
+    log_info("Merged %d IDELAYCTRL cells into '%s'\n", int(idelayctrls.size()), ctx->nameOf(keep));
+}
+
 void XC7Packer::pack_idelayctrl()
 {
-    CellInfo *idelayctrl = nullptr;
+    std::vector<CellInfo *> idelayctrls;
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
-        if (ci->type == id_IDELAYCTRL) {
-            if (idelayctrl)
-                log_error("Found more than one IDELAYCTRL cell!\n");
-            idelayctrl = ci;
-        }
+        if (ci->type == id_IDELAYCTRL)
+            idelayctrls.push_back(ci);
     }
-    if (!idelayctrl)
+    if (idelayctrls.empty())
         return;
+    if (idelayctrls.size() > 1) {
+        merge_idelayctrls(idelayctrls);
+        flush_cells();
+    }
+    CellInfo *idelayctrl = idelayctrls.front();
     std::set<SiteIndex> ioctrl_sites;
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
@@ -1611,6 +1680,8 @@ void XC7Packer::pack_idelayctrl()
                 create_cell(id_IDELAYCTRL, int_name(idelayctrl->name, "CTRL_DUP_" + std::to_string(i), false));
         dup_idc->connectPort(id_REFCLK, idelayctrl->getPort(id_REFCLK));
         dup_idc->connectPort(id_RST, idelayctrl->getPort(id_RST));
+        if (idelayctrl->attrs.count(ctx->id("X_MERGED_IDELAYCTRLS")))
+            dup_idc->attrs[ctx->id("X_MERGED_IDELAYCTRLS")] = idelayctrl->attrs.at(ctx->id("X_MERGED_IDELAYCTRLS"));
         if (rdy) {
             NetInfo *dup_rdy =
                     (ioctrl_sites.size() == 1)

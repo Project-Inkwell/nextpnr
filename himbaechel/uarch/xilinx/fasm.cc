@@ -5656,8 +5656,18 @@ void XilinxImpl::write_placement(const std::string &filename)
             continue;
         emit(ci->name.str(ctx), ci);
     }
-    for (const auto &kv : idelay_orig)
+    for (const auto &kv : idelay_orig) {
         emit(kv.first, kv.second);
+        // IDELAYCTRLs merged into this one (pack_idelayctrl) are placed with it.
+        auto merged = kv.second->attrs.find(ctx->id("X_MERGED_IDELAYCTRLS"));
+        if (merged == kv.second->attrs.end())
+            continue;
+        std::vector<std::string> names;
+        boost::split(names, merged->second.as_string(), boost::is_any_of(" "), boost::token_compress_on);
+        for (const auto &name : names)
+            if (!name.empty())
+                emit(name, kv.second);
+    }
     out << (first ? "" : "\n") << "}\n";
     close_ofstream_and_log_error(out, filename, "placement file");
     log_info("Wrote placement of %d cells to %s\n", int(ctx->cells.size()), filename.c_str());
