@@ -3535,12 +3535,12 @@ struct FasmBackend
         auto pll0_fbdiv_45 = int_or_default(ci->params, ctx->id("PLL0_FBDIV_45"), 4);
         bool invalid_pll0_fbdiv_45 = pll0_fbdiv_45 < 4 || pll0_fbdiv_45 > 5;
         if (invalid_pll0_fbdiv_45)
-            log_error("PLL0_FBDIV_45 can only be 4 or 5, but is: %d\n", pll0_fbdiv);
+            log_error("PLL0_FBDIV_45 can only be 4 or 5, but is: %d\n", pll0_fbdiv_45);
         write_bit("PLL0_FBDIV_45[0]", pll0_fbdiv_45 == 5);
         auto pll1_fbdiv_45 = int_or_default(ci->params, ctx->id("PLL1_FBDIV_45"), 4);
         bool invalid_pll1_fbdiv_45 = pll1_fbdiv_45 < 4 || pll1_fbdiv_45 > 5;
         if (invalid_pll1_fbdiv_45)
-            log_error("PLL1_FBDIV_45 can only be 4 or 5, but is: %d\n", pll1_fbdiv);
+            log_error("PLL1_FBDIV_45 can only be 4 or 5, but is: %d\n", pll1_fbdiv_45);
         write_bit("PLL1_FBDIV_45[0]", pll1_fbdiv_45 == 5);
 
         auto pll0_dmon_cfg = bool_or_default(ci->params, ctx->id("PLL0_DMON_CFG"), false);
@@ -4364,7 +4364,7 @@ struct FasmBackend
         auto cpll_fbdiv_45 = int_or_default(ci->params, ctx->id("CPLL_FBDIV_45"), 4);
         bool invalid_cpll_fbdiv_45 = cpll_fbdiv_45 < 4 || cpll_fbdiv_45 > 5;
         if (invalid_cpll_fbdiv_45)
-            log_error("CPLL_FBDIV_45 can only be 4 or 5, but is: %d\n", cpll_fbdiv);
+            log_error("CPLL_FBDIV_45 can only be 4 or 5, but is: %d\n", cpll_fbdiv_45);
         write_bit("CPLL_FBDIV_45[0]", cpll_fbdiv_45 == 5);
 
         auto cpll_init_cfg = int_or_default(ci->params, ctx->id("CPLL_INIT_CFG"), 0b11110);
