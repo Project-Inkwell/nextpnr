@@ -499,7 +499,7 @@ struct FasmBackend
                 last_was_blank = false;
         } else {
             if (extra_data.pip_config == 1)
-                log_warning("Unprocessed route-thru %s.%s.%s\n!", tile_type.c_str(ctx), src.c_str(ctx), dst.c_str(ctx));
+                log_warning("Unprocessed route-thru %s.%s.%s!\n", tile_type.c_str(ctx), src.c_str(ctx), dst.c_str(ctx));
 
             std::string tile_name = uarch->tile_name(pip.tile);
             std::string dst_name = dst.str(ctx);
@@ -1700,7 +1700,7 @@ struct FasmBackend
         bool standard_uses_stepdown = is_low_volt_lvcmos || is_sstl;
         if (bank_supports_stepdown && standard_uses_stepdown) {
             if (iostandard == "SSTL12") {
-                log_error("SSTL12 is only available on high performance banks.");
+                log_error("SSTL12 is only available on high performance banks.\n");
             }
             write_bit("LVCMOS12_LVCMOS15_LVCMOS18_SSTL135_SSTL15.STEPDOWN");
             ioconfig_by_hclk[hclk].stepdown = true;
@@ -1864,7 +1864,7 @@ struct FasmBackend
             else if (edge == "SAME_EDGE_PIPELINED") { /* both bits clear: write nothing */
             } else
                 log_error("unsupported clock edge parameter for cell '%s' at %s: %s. Supported are: SAME_EDGE, "
-                          "OPPOSITE_EDGE and SAME_EDGE_PIPELINED",
+                          "OPPOSITE_EDGE and SAME_EDGE_PIPELINED\n",
                           ci->name.c_str(ctx), site.c_str(), edge.c_str());
 
             std::string srtype = str_or_default(ci->params, id_SRTYPE, "SYNC");
@@ -3511,36 +3511,36 @@ struct FasmBackend
         auto pll0_refclk_div = int_or_default(ci->params, ctx->id("PLL0_REFCLK_DIV"), 1);
         bool invalid_pll0_refclk_div = pll0_refclk_div < 1 || pll0_refclk_div > 2;
         if (invalid_pll0_refclk_div)
-            log_error("PLL0_REFCLK_DIV can only be 1 or 2, but is: %d", pll0_refclk_div);
+            log_error("PLL0_REFCLK_DIV can only be 1 or 2, but is: %d\n", pll0_refclk_div);
         write_bit("PLL0_REFCLK_DIV[4]", pll0_refclk_div == 1);
         auto pll1_refclk_div = int_or_default(ci->params, ctx->id("PLL1_REFCLK_DIV"), 1);
         bool invalid_pll1_refclk_div = pll1_refclk_div < 1 || pll1_refclk_div > 2;
         if (invalid_pll1_refclk_div)
-            log_error("PLL1_REFCLK_DIV can only be 1 or 2, but is: %d", pll1_refclk_div);
+            log_error("PLL1_REFCLK_DIV can only be 1 or 2, but is: %d\n", pll1_refclk_div);
         write_bit("PLL1_REFCLK_DIV[4]", pll1_refclk_div == 1);
 
         auto pll0_fbdiv = int_or_default(ci->params, ctx->id("PLL0_FBDIV"), 1);
         bool invalid_pll0_fbdiv = pll0_fbdiv < 1 || pll0_fbdiv > 5;
         if (invalid_pll0_fbdiv)
-            log_error("PLL0_FBDIV can only be 1, 2, 3, 4 or 5, but is: %d", pll0_fbdiv);
+            log_error("PLL0_FBDIV can only be 1, 2, 3, 4 or 5, but is: %d\n", pll0_fbdiv);
         if (pll0_fbdiv == 1) write_bit("PLL0_FBDIV[4]");
         else write_int_vector("PLL0_FBDIV[1:0]", pll0_fbdiv - 2, 2);
         auto pll1_fbdiv = int_or_default(ci->params, ctx->id("PLL1_FBDIV"), 1);
         bool invalid_pll1_fbdiv = pll1_fbdiv < 1 || pll1_fbdiv > 5;
         if (invalid_pll1_fbdiv)
-            log_error("PLL1_FBDIV can only be 1, 2, 3, 4 or 5, but is: %d", pll1_fbdiv);
+            log_error("PLL1_FBDIV can only be 1, 2, 3, 4 or 5, but is: %d\n", pll1_fbdiv);
         if (pll1_fbdiv == 1) write_bit("PLL1_FBDIV[4]");
         else write_int_vector("PLL1_FBDIV[1:0]", pll1_fbdiv - 2, 2);
 
         auto pll0_fbdiv_45 = int_or_default(ci->params, ctx->id("PLL0_FBDIV_45"), 4);
         bool invalid_pll0_fbdiv_45 = pll0_fbdiv_45 < 4 || pll0_fbdiv_45 > 5;
         if (invalid_pll0_fbdiv_45)
-            log_error("PLL0_FBDIV_45 can only be 4 or 5, but is: %d", pll0_fbdiv);
+            log_error("PLL0_FBDIV_45 can only be 4 or 5, but is: %d\n", pll0_fbdiv);
         write_bit("PLL0_FBDIV_45[0]", pll0_fbdiv_45 == 5);
         auto pll1_fbdiv_45 = int_or_default(ci->params, ctx->id("PLL1_FBDIV_45"), 4);
         bool invalid_pll1_fbdiv_45 = pll1_fbdiv_45 < 4 || pll1_fbdiv_45 > 5;
         if (invalid_pll1_fbdiv_45)
-            log_error("PLL1_FBDIV_45 can only be 4 or 5, but is: %d", pll1_fbdiv);
+            log_error("PLL1_FBDIV_45 can only be 4 or 5, but is: %d\n", pll1_fbdiv);
         write_bit("PLL1_FBDIV_45[0]", pll1_fbdiv_45 == 5);
 
         auto pll0_dmon_cfg = bool_or_default(ci->params, ctx->id("PLL0_DMON_CFG"), false);
@@ -4190,7 +4190,7 @@ struct FasmBackend
         write_int_vector("QPLL_COARSE_FREQ_OVRD[5:0]", 0b10000, 6);
         auto coarse_freq_ovrd_en = int_or_default(ci->params, ctx->id("QPLL_COARSE_FREQ_OVRD_EN"), 0);
         if (coarse_freq_ovrd_en > 0)
-            log_warning("According to UG476, the QPLL_COARSE_FREQ_OVRD_EN attribute must be 0, but it is not. Be sure you know what you are doing.");
+            log_warning("According to UG476, the QPLL_COARSE_FREQ_OVRD_EN attribute must be 0, but it is not. Be sure you know what you are doing.\n");
         write_bit("QPLL_COARSE_FREQ_OVRD_EN[0]", coarse_freq_ovrd_en >= 1);
         write_int_vector("QPLL_INIT_CFG[23:0]", 0b110, 24);
         write_int_vector("QPLL_LOCK_CFG[15:0]", 0b10000111101000, 16);
@@ -4198,14 +4198,14 @@ struct FasmBackend
         write_int_vector("QPLL_CP[9:0]", 0b11111, 10);
         auto cp_monitor_en = int_or_default(ci->params, ctx->id("QPLL_CP_MONITOR_EN"), 0);
         if (cp_monitor_en > 0)
-            log_warning("According to UG476, the QPLL_CP_MONITOR_EN attribute must be 0, but it is not. Be sure you know what you are doing.");
+            log_warning("According to UG476, the QPLL_CP_MONITOR_EN attribute must be 0, but it is not. Be sure you know what you are doing.\n");
         write_bit("QPLL_CP_MONITOR_EN[0]", cp_monitor_en >= 1);
         write_bit("QPLL_DMONITOR_SEL[0]", 0); // TODO: find real vivado default value
 
         auto qpll_refclk_div = int_or_default(ci->params, ctx->id("QPLL_REFCLK_DIV"), 1);
         bool invalid_qpll_refclk_div = qpll_refclk_div < 1 || qpll_refclk_div > 4;
         if (invalid_qpll_refclk_div)
-            log_error("QPLL_REFCLK_DIV can only range from 1 to 4, but is: %d", qpll_refclk_div);
+            log_error("QPLL_REFCLK_DIV can only range from 1 to 4, but is: %d\n", qpll_refclk_div);
         auto real_qpll_refclk_div = qpll_refclk_div == 1 ? 16 : qpll_refclk_div - 2;
         write_int_vector("QPLL_REFCLK_DIV[4:0]", real_qpll_refclk_div, 5);
 
@@ -4214,12 +4214,12 @@ struct FasmBackend
 
         auto fbdiv_monitor_en = int_or_default(ci->params, ctx->id("FBDIV_MONITOR_EN"), 0);
         if (fbdiv_monitor_en > 0)
-            log_warning("According to UG476, the QPLL_FBDIV_MONITOR_EN attribute must be 0, but it is 1. Be sure you know what you are doing.");
+            log_warning("According to UG476, the QPLL_FBDIV_MONITOR_EN attribute must be 0, but it is 1. Be sure you know what you are doing.\n");
         write_bit("QPLL_FBDIV_MONITOR_EN[0]", fbdiv_monitor_en >= 1);
 
         auto qpll_fbdiv_ratio = int_or_default(ci->params, ctx->id("QPLL_FBDIV_RATIO"), 1);
         if (qpll_fbdiv_ratio > 1)
-            log_error("QPLL_FBDIV_ratio can only be 0 or 1, but is: %d", qpll_fbdiv_ratio);
+            log_error("QPLL_FBDIV_ratio can only be 0 or 1, but is: %d\n", qpll_fbdiv_ratio);
         write_bit("QPLL_FBDIV_RATIO[0]", qpll_fbdiv_ratio == 1);
 
         auto pll_clkout_cfg = int_or_default(ci->params, ctx->id("PLL_CLKOUT_CFG"), 0);
@@ -4356,7 +4356,7 @@ struct FasmBackend
             case 16: cpll_fbdiv = 14; break;
             case 20: cpll_fbdiv = 15; break;
             default:
-                log_error("CPLL_FBDIV can only be 1, 2, 3, 4, 5, 6, 8, 10, 12, 16 or 20, but is: %d", cpll_fbdiv);
+                log_error("CPLL_FBDIV can only be 1, 2, 3, 4, 5, 6, 8, 10, 12, 16 or 20, but is: %d\n", cpll_fbdiv);
                 break;
         }
         write_int_vector("CPLL_FBDIV[4:0]", cpll_fbdiv, 5);
@@ -4364,7 +4364,7 @@ struct FasmBackend
         auto cpll_fbdiv_45 = int_or_default(ci->params, ctx->id("CPLL_FBDIV_45"), 4);
         bool invalid_cpll_fbdiv_45 = cpll_fbdiv_45 < 4 || cpll_fbdiv_45 > 5;
         if (invalid_cpll_fbdiv_45)
-            log_error("CPLL_FBDIV_45 can only be 4 or 5, but is: %d", cpll_fbdiv);
+            log_error("CPLL_FBDIV_45 can only be 4 or 5, but is: %d\n", cpll_fbdiv);
         write_bit("CPLL_FBDIV_45[0]", cpll_fbdiv_45 == 5);
 
         auto cpll_init_cfg = int_or_default(ci->params, ctx->id("CPLL_INIT_CFG"), 0b11110);
@@ -4386,7 +4386,7 @@ struct FasmBackend
             case 16: cpll_refclk_div = 14; break;
             case 20: cpll_refclk_div = 15; break;
             default:
-                log_error("CPLL_REFCLK_DIV can only be 1, 2, 3, 4, 5, 6, 8, 10, 12, 16 or 20, but is: %d", cpll_refclk_div);
+                log_error("CPLL_REFCLK_DIV can only be 1, 2, 3, 4, 5, 6, 8, 10, 12, 16 or 20, but is: %d\n", cpll_refclk_div);
                 break;
         }
         write_int_vector("CPLL_REFCLK_DIV[4:0]", cpll_refclk_div, 5);
