@@ -3008,18 +3008,18 @@ struct FasmBackend
 
         double clkfbout_mult_f = float_or_default(ci, "CLKFBOUT_MULT_F", 5.000);
         // lk_table[] and the filter_lookup*[] tables hold 64 rows, read at
-        // [mult-1], and UG472 allows CLKFBOUT_MULT_F up to 64.000.  The old
+        // [mult-1], and UG472 allows CLKFBOUT_MULT_F from 2.000 to 64.000.  The old
         // pair of tests rejected 0 and >63 but let every NEGATIVE value
         // through, and (int) of an out-of-range double is undefined behaviour
         // that differs by host -- x86-64 yields INT_MIN, arm64 saturates to
         // INT_MAX -- so the same netlist crashed on one machine and passed the
         // guards on another (nextpnr-xilinx#78).  So range-check the double
         // itself, before any cast: NaN and +-inf fail the finiteness test, and
-        // [1, 64] truncates to 1..64.  Name the offending value as given.
+        // [2, 64] truncates to 2..64.  Name the offending value as given.
         bool clkfbout_mult_in_range =
-                std::isfinite(clkfbout_mult_f) && clkfbout_mult_f >= 1.0 && clkfbout_mult_f <= 64.0;
+                std::isfinite(clkfbout_mult_f) && clkfbout_mult_f >= 2.0 && clkfbout_mult_f <= 64.0;
         if (!clkfbout_mult_in_range)
-            log_error("MMCME2_ADV: CLKFBOUT_MULT_F must be in the range 1..64 (got %.10g)\n", clkfbout_mult_f);
+            log_error("MMCME2_ADV: CLKFBOUT_MULT_F must be in the range 2..64 (got %.10g)\n", clkfbout_mult_f);
         int clkfbout_mult = (int)clkfbout_mult_f;
         write_int_vector("LKTABLE[39:0]", Xc7MMCM::lk_table[clkfbout_mult - 1], 40);
 
