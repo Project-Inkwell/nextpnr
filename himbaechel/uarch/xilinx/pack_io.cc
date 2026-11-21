@@ -1096,18 +1096,21 @@ void XC7Packer::fold_inverter(CellInfo *cell, std::string port)
     CellInfo *drv = net->driver.cell;
     if (!drv)
         return;
+    // The folded inverter toggles the pin's inversion, so that one already
+    // requested with IS_<port>_INVERTED cancels it.
+    IdString inverted = ctx->idf("IS_%s_INVERTED", port.c_str());
     if (drv->type == id_LUT1 && int_or_default(drv->params, id_INIT, 0) == 1) {
         cell->disconnectPort(p);
         NetInfo *preinv = drv->getPort(id_I0);
         cell->connectPort(p, preinv);
-        cell->params[ctx->idf("IS_%s_INVERTED", port.c_str())] = 1;
+        cell->params[inverted] = int_or_default(cell->params, inverted, 0) ? 0 : 1;
         if (net->users.empty())
             packed_cells.insert(drv->name);
     } else if (drv->type == id_INV) {
         cell->disconnectPort(p);
         NetInfo *preinv = drv->getPort(id_I);
         cell->connectPort(p, preinv);
-        cell->params[ctx->idf("IS_%s_INVERTED", port.c_str())] = 1;
+        cell->params[inverted] = int_or_default(cell->params, inverted, 0) ? 0 : 1;
         if (net->users.empty())
             packed_cells.insert(drv->name);
     }
