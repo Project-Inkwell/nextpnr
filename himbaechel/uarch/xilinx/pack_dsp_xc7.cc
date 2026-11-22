@@ -49,11 +49,11 @@ unsigned XC7Packer::walk_dsp(CellInfo *root, CellInfo *current_cell, int constr_
 
     auto check_illegal_fanout = [&](NetInfo *ni, std::string port) {
         if (ni->users.entries() > 1)
-            log_error("Port %s connected to net %s has more than one user", port.c_str(), ni->name.c_str(ctx));
+            log_error("Port %s connected to net %s has more than one user\n", port.c_str(), ni->name.c_str(ctx));
 
         PortRef &user = *ni->users.begin();
         if (user.cell->type != id_DSP48E1_DSP48E1)
-            log_error("User %s of net %s is not a DSP block, but %s", user.cell->name.c_str(ctx), ni->name.c_str(ctx),
+            log_error("User %s of net %s is not a DSP block, but %s\n", user.cell->name.c_str(ctx), ni->name.c_str(ctx),
                       user.cell->type.c_str(ctx));
     };
 
@@ -72,7 +72,7 @@ unsigned XC7Packer::walk_dsp(CellInfo *root, CellInfo *current_cell, int constr_
         NPNR_ASSERT(cout_cell != nullptr);
 
         if (cascaded_cell != nullptr && cout_cell != cascaded_cell)
-            log_error("the cascading outputs of DSP block %s are connected to different cells",
+            log_error("the cascading outputs of DSP block %s are connected to different cells\n",
                       current_cell->name.c_str(ctx));
 
         cascaded_cell = cout_cell;
