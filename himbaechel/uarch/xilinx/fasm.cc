@@ -5645,6 +5645,17 @@ void XilinxImpl::write_placement(const std::string &filename)
              << "\"nextpnr_bel\": \"" << escape(ctx->nameOfBel(ci->bel)) << "\", "
              << "\"type\": \"" << escape(ci->type.str(ctx)) << "\"}";
     };
+    // IDELAYCTRLs merged into another one (pack_idelayctrl) are placed with it.
+    auto emit_merged_idelayctrls = [&](CellInfo *ci) {
+        auto merged = ci->attrs.find(ctx->id("X_MERGED_IDELAYCTRLS"));
+        if (merged == ci->attrs.end())
+            return;
+        std::vector<std::string> names;
+        boost::split(names, merged->second.as_string(), boost::is_any_of(" "), boost::token_compress_on);
+        for (const auto &name : names)
+            if (!name.empty())
+                emit(name, ci);
+    };
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
         if (ci->bel == BelId())
@@ -5654,9 +5665,13 @@ void XilinxImpl::write_placement(const std::string &filename)
         if (idelay_dup.count(ci->name))
             continue;
         emit(ci->name.str(ctx), ci);
+        // An IDELAYCTRL left unreplicated, in a design without I/ODELAYs
+        emit_merged_idelayctrls(ci);
     }
-    for (const auto &kv : idelay_orig)
+    for (const auto &kv : idelay_orig) {
         emit(kv.first, kv.second);
+        emit_merged_idelayctrls(kv.second);
+    }
     out << (first ? "" : "\n") << "}\n";
     close_ofstream_and_log_error(out, filename, "placement file");
     log_info("Wrote placement of %d cells to %s\n", int(ctx->cells.size()), filename.c_str());

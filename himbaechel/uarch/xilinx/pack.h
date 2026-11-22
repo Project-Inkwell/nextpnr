@@ -193,6 +193,7 @@ struct XC7Packer : public XilinxPacker
     // IOLOGIC
     dict<IdString, XFormRule> hp_iol_rules, hd_iol_rules, ioctrl_rules;
     void fold_inverter(CellInfo *cell, std::string port);
+    void merge_idelayctrls(const std::vector<CellInfo *> &idelayctrls);
     SiteIndex get_ologic_site(BelId io_bel);
     SiteIndex get_ilogic_site(BelId io_bel);
     SiteIndex get_ilogic_site_for_ologic(SiteIndex ologic_site);
