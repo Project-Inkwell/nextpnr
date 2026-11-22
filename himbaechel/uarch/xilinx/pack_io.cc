@@ -1379,7 +1379,9 @@ void XC7Packer::pack_iologic()
             log_info("   binding input DDR cell '%s' to bel '%s'\n", ctx->nameOf(ci), ctx->nameOfBel(iddr_bel));
             ctx->bindBel(iddr_bel, ci, STRENGTH_LOCKED);
         } else if (ci->type == id_ISERDESE2) {
-            fold_inverter(ci, "CLK");
+            // CLK is not folded: for an ISERDESE2 with .CLK(!clk), Vivado 2026.1
+            // writes the same bits as with a plain clock, and what that means
+            // is not known yet.
             fold_inverter(ci, "CLKB");
             fold_inverter(ci, "OCLKB");
 

@@ -1902,9 +1902,12 @@ struct FasmBackend
                     write_bit("IFF.ZSRVAL_Q" + std::to_string(i));
             }
         } else if (ci->type.in(id_OLOGICE2_OUTFF, id_OLOGICE3_OUTFF)) {
+            // Vivado 2026.1 flips the edge bit when the clock is inverted: with
+            // IS_C_INVERTED (or a folded .C(!clk)) SAME_EDGE clears it and
+            // OPPOSITE_EDGE sets it.
             std::string edge = str_or_default(ci->params, id_DDR_CLK_EDGE, "OPPOSITE_EDGE");
-            if (edge == "SAME_EDGE")
-                write_bit("ODDR.DDR_CLK_EDGE.SAME_EDGE");
+            const bool clk_inv = bool_or_default(ci->params, id_IS_CLK_INVERTED);
+            write_bit("ODDR.DDR_CLK_EDGE.SAME_EDGE", (edge == "SAME_EDGE") != clk_inv);
 
             write_bit("ODDR_TDDR.IN_USE");
             write_bit("OQUSED");
@@ -1931,7 +1934,6 @@ struct FasmBackend
             if (sr_name == "R")
                 write_bit("ZSRVAL_OQ");
 
-            auto clk_inv = bool_or_default(ci->params, id_IS_CLK_INVERTED);
             if (!clk_inv)
                 write_bit("ZINV_CLK");
         } else if (ci->type.in(id_OLOGICE2_TFF, id_OLOGICE3_TFF)) {
@@ -1959,13 +1961,15 @@ struct FasmBackend
             const BelId outff_bel = uarch->get_site_bel(site_key, ctx->id("OUTFF"));
             const bool output_is_an_oddr = outff_bel != BelId() && ctx->getBoundBelCell(outff_bel) != nullptr;
             if (!output_is_an_oddr) {
-                write_bit("ODDR.DDR_CLK_EDGE.SAME_EDGE");
+                // Flipped by an inverted clock, as for the output ODDR.
                 auto clk_inv = bool_or_default(ci->params, id_IS_CLK_INVERTED);
+                write_bit("ODDR.DDR_CLK_EDGE.SAME_EDGE", !clk_inv);
                 if (!clk_inv)
                     write_bit("ZINV_CLK");
             }
         } else if (ci->type == id_OSERDESE2_OSERDESE2) {
-            write_bit("ODDR.DDR_CLK_EDGE.SAME_EDGE");
+            // Vivado 2026.1 clears the edge bit when CLK is inverted.
+            write_bit("ODDR.DDR_CLK_EDGE.SAME_EDGE", !bool_or_default(ci->params, id_IS_CLK_INVERTED, false));
             write_bit("ODDR.SRUSED");
             write_bit("ODDR_TDDR.IN_USE");
 
