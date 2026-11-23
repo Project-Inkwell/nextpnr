@@ -1370,6 +1370,34 @@ void XC7Packer::pack_iologic()
             fold_inverter(ci, "CLKB");
             fold_inverter(ci, "OCLKB");
 
+            // A constant on SHIFTIN1/2, OCLK or OCLKB cannot be routed: the
+            // SHIFTINs are reachable only from the master's SHIFTOUTs, and the
+            // site's OCLK and OCLKB inverters only from a clock.  A master
+            // ignores its SHIFTINs and a constant clock never clocks, so
+            // treat such a pin as unconnected, as Vivado does.  The tie-off
+            // pass has turned a 0 on OCLK/OCLKB into VCC plus an
+            // IS_..._INVERTED, so that parameter goes too.
+            auto is_constant = [&](NetInfo *net) {
+                return net != nullptr && (net->name == ctx->id("$PACKER_GND_NET") ||
+                                          net->name == ctx->id("$PACKER_VCC_NET"));
+            };
+            const bool is_slave = str_or_default(ci->params, id_SERDES_MODE, "MASTER") == "SLAVE";
+            for (IdString port : {id_SHIFTIN1, id_SHIFTIN2}) {
+                if (!is_constant(ci->getPort(port)))
+                    continue;
+                if (is_slave)
+                    log_error("%s '%s' is a SLAVE with %s tied to a constant; it must come from the master's "
+                              "SHIFTOUT%c\n",
+                              ci->type.c_str(ctx), ctx->nameOf(ci), port.c_str(ctx), port.str(ctx).back());
+                ci->disconnectPort(port);
+            }
+            for (IdString port : {id_OCLK, id_OCLKB}) {
+                if (!is_constant(ci->getPort(port)))
+                    continue;
+                ci->disconnectPort(port);
+                ci->params.erase(ctx->idf("IS_%s_INVERTED", port.c_str(ctx)));
+            }
+
             // OFB loopback: the data path is the partner OSERDESE2's OFB
             // output, so the cell has no IOB / IDELAYE2 to anchor on and is
             // bound next to its OSERDESE2 in the unconstrained pass below.
