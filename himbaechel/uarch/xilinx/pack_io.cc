@@ -1096,18 +1096,21 @@ void XC7Packer::fold_inverter(CellInfo *cell, std::string port)
     CellInfo *drv = net->driver.cell;
     if (!drv)
         return;
+    // The folded inverter toggles the pin's inversion, so that one already
+    // requested with IS_<port>_INVERTED cancels it.
+    IdString inverted = ctx->idf("IS_%s_INVERTED", port.c_str());
     if (drv->type == id_LUT1 && int_or_default(drv->params, id_INIT, 0) == 1) {
         cell->disconnectPort(p);
         NetInfo *preinv = drv->getPort(id_I0);
         cell->connectPort(p, preinv);
-        cell->params[ctx->idf("IS_%s_INVERTED", port.c_str())] = 1;
+        cell->params[inverted] = int_or_default(cell->params, inverted, 0) ? 0 : 1;
         if (net->users.empty())
             packed_cells.insert(drv->name);
     } else if (drv->type == id_INV) {
         cell->disconnectPort(p);
         NetInfo *preinv = drv->getPort(id_I);
         cell->connectPort(p, preinv);
-        cell->params[ctx->idf("IS_%s_INVERTED", port.c_str())] = 1;
+        cell->params[inverted] = int_or_default(cell->params, inverted, 0) ? 0 : 1;
         if (net->users.empty())
             packed_cells.insert(drv->name);
     }
@@ -1124,6 +1127,9 @@ void XC7Packer::pack_iologic()
     iologic_rules[id_IDDR].port_multixform[id_C] = {id_CK, id_CKB};
     iologic_rules[id_IDDR].port_xform[id_S] = id_SR;
     iologic_rules[id_IDDR].port_xform[id_R] = id_SR;
+    // The library calls the clock inversion IS_C_INVERTED, the FASM writer
+    // IS_CLK_INVERTED, as for the SERDES cells.
+    iologic_rules[id_IDDR].param_xform[id_IS_C_INVERTED] = id_IS_CLK_INVERTED;
 
     // SERDES
     iologic_rules[id_ISERDESE2].new_type = id_ISERDESE2_ISERDESE2;
@@ -1244,6 +1250,11 @@ void XC7Packer::pack_iologic()
             oddr_rules[id_ODDR].port_xform[id_C] = id_CK;
             oddr_rules[id_ODDR].port_xform[id_S] = id_SR;
             oddr_rules[id_ODDR].port_xform[id_R] = id_SR;
+            oddr_rules[id_ODDR].param_xform[id_IS_C_INVERTED] = id_IS_CLK_INVERTED;
+            // An inverted clock goes into the site's clock inverter, as in
+            // Vivado; as a fabric LUT it would take the clock off the clock
+            // network.
+            fold_inverter(ci, "C");
             xform_cell(oddr_rules, ci);
 
             BelId oddr_bel = uarch->get_site_bel(ol_site, is_tristate ? ctx->id("TFF") : ctx->id("OUTFF"));
@@ -1251,6 +1262,7 @@ void XC7Packer::pack_iologic()
             log_info("   binding output DDR cell '%s' to bel '%s'\n", ctx->nameOf(ci), ctx->nameOfBel(oddr_bel));
             ctx->bindBel(oddr_bel, ci, STRENGTH_LOCKED);
         } else if (ci->type == id_OSERDESE2) {
+            fold_inverter(ci, "CLK");
 
             NetInfo *shiftin1 = ci->getPort(id_SHIFTIN1), *shiftin2 = ci->getPort(id_SHIFTIN2),
                     *tbytein = ci->getPort(id_TBYTEIN);
@@ -1367,6 +1379,7 @@ void XC7Packer::pack_iologic()
             log_info("   binding input DDR cell '%s' to bel '%s'\n", ctx->nameOf(ci), ctx->nameOfBel(iddr_bel));
             ctx->bindBel(iddr_bel, ci, STRENGTH_LOCKED);
         } else if (ci->type == id_ISERDESE2) {
+            fold_inverter(ci, "CLK");
             fold_inverter(ci, "CLKB");
             fold_inverter(ci, "OCLKB");
 
