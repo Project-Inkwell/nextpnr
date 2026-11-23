@@ -325,6 +325,15 @@ void get_tied_pins(Context *ctx, dict<IdString, dict<IdString, bool>> &tied_pins
     tied_pins[id_OSERDESE2][id_OCE] = true;
     tied_pins[id_OSERDESE2][id_TCE] = true;
 
+    // ISERDESE2 inputs left open, tied low as Vivado ties them. With nothing
+    // routed, BITSLIP's IMUX reads VCC (its default pip) and the cell slips on
+    // every CLKDIV cycle; RST comes through a CTRL wire, which has no default.
+    // The inputs Vivado ties high (CE1, CE2, DYNCLKSEL, DYNCLKDIVSEL) already
+    // read VCC through their IMUX default. BITSLIP is a port name the chipdb
+    // already carries, so naming it here interns no new id.
+    tied_pins[id_ISERDESE2][ctx->id("BITSLIP")] = false;
+    tied_pins[id_ISERDESE2][id_RST] = false;
+
     tied_pins[id_IDELAYE2][id_REGRST] = false;
     tied_pins[id_IDELAYE2][id_LDPIPEEN] = false;
     tied_pins[id_IDELAYE2][id_CINVCTRL] = false;
