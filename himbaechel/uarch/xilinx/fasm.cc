@@ -2237,12 +2237,94 @@ struct FasmBackend
         return s.find("BUFRCLK");
     }
 
+    // A global clock lane runs along the clock column from the BUFG that
+    // drives it, and each clock row (CLK_HROW tile) it passes through must
+    // have CLK_HROW_R_CK_GCLK<n>_ACTIVE set, not only the rows that tap it: a
+    // row left inactive stops the lane there, and the rows beyond it get no
+    // clock. Vivado sets the bit over the whole stretch, from the BUFG to the
+    // furthest row that uses the lane. (As nextpnr-xilinx f0975539 does; here
+    // the BUFG row comes from where the BUFGCTRL was placed.)
+    //
+    // Returns, per CLK_HROW tile, the lanes that tile only crosses: inside
+    // the stretch of a lane, in the BUFG's column, and not tapped there.
+    dict<int, std::set<int>> crossed_gclk_lanes()
+    {
+        const std::string bufg_lane_prefix = "CLK_BUFG_CK_GCLK";
+        const std::string hrow_lane_prefix = "CLK_HROW_R_CK_GCLK";
+        const int width = ctx->chip_info->width;
+
+        // The lane each placed BUFGCTRL drives: the pip its output net takes
+        // inside the BUFGCTRL's own tile.
+        dict<int, int> bufg_tile_of_lane;
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            const bool is_placed_bufgctrl = (ci->type == id_BUFGCTRL) && (ci->bel != BelId());
+            if (!is_placed_bufgctrl)
+                continue;
+            NetInfo *out_net = ci->getPort(id_O);
+            const bool has_no_output_net = (out_net == nullptr);
+            if (has_no_output_net)
+                continue;
+            for (auto &w : out_net->wires) {
+                PipId pip = w.second.pip;
+                const bool is_pip_in_bufg_tile = (pip != PipId()) && (pip.tile == ci->bel.tile);
+                if (!is_pip_in_bufg_tile)
+                    continue;
+                auto &pd = chip_pip_info(ctx->chip_info, pip);
+                std::string dst = IdString(chip_wire_info(ctx->chip_info, WireId(pip.tile, pd.dst_wire)).name).str(ctx);
+                const bool drives_a_lane = boost::starts_with(dst, bufg_lane_prefix);
+                if (drives_a_lane)
+                    bufg_tile_of_lane[std::stoi(dst.substr(bufg_lane_prefix.size()))] = ci->bel.tile;
+            }
+        }
+
+        // The clock rows, and the rows that tap each lane.
+        std::vector<int> hrow_tiles;
+        dict<int, std::vector<int>> tap_rows_of_lane;
+        std::set<std::pair<int, int>> tapped; // (tile, lane)
+        for (int tile = 0; tile < ctx->chip_info->tile_insts.ssize(); tile++) {
+            const bool is_clock_row = boost::starts_with(ctx->get_tile_type(tile).str(ctx), "CLK_HROW");
+            if (!is_clock_row)
+                continue;
+            hrow_tiles.push_back(tile);
+            for (auto &s : used_wires_starting_with(tile, hrow_lane_prefix, true)) {
+                int lane = std::stoi(s.substr(hrow_lane_prefix.size()));
+                tap_rows_of_lane[lane].push_back(tile / width);
+                tapped.insert({tile, lane});
+            }
+        }
+
+        dict<int, std::set<int>> crossed;
+        for (auto &entry : tap_rows_of_lane) {
+            int lane = entry.first;
+            const bool lane_has_placed_bufg = bufg_tile_of_lane.count(lane) > 0;
+            if (!lane_has_placed_bufg)
+                continue;
+            int bufg_tile = bufg_tile_of_lane.at(lane);
+            int lo = bufg_tile / width, hi = bufg_tile / width;
+            for (int row : entry.second) {
+                lo = std::min(lo, row);
+                hi = std::max(hi, row);
+            }
+            for (int tile : hrow_tiles) {
+                int row = tile / width;
+                const bool is_in_bufg_column = (tile % width) == (bufg_tile % width);
+                const bool is_in_stretch = is_in_bufg_column && (row >= lo) && (row <= hi);
+                const bool is_only_crossed = is_in_stretch && !tapped.count({tile, lane});
+                if (is_only_crossed)
+                    crossed[tile].insert(lane);
+            }
+        }
+        return crossed;
+    }
+
     void write_clocking()
     {
         std::string name, type;
 
         std::set<std::string> all_gclk;
         dict<int, std::set<std::string>> hclk_by_row;
+        dict<int, std::set<int>> crossed_lanes = crossed_gclk_lanes();
 
         for (auto &cell : ctx->cells) {
             CellInfo *ci = cell.second.get();
@@ -2310,6 +2392,15 @@ struct FasmBackend
                 for (auto s : used_gclk) {
                     write_bit(s + "_ACTIVE");
                     all_gclk.insert(s.substr(s.find("GCLK")));
+                }
+                // The lanes this row only crosses (see crossed_gclk_lanes):
+                // a lane is crossed only where it is tapped elsewhere, so it
+                // is already in all_gclk.
+                auto crossed = crossed_lanes.find(tile);
+                const bool row_is_crossed = (crossed != crossed_lanes.end());
+                if (row_is_crossed) {
+                    for (int lane : crossed->second)
+                        write_bit(stringf("CLK_HROW_R_CK_GCLK%d_ACTIVE", lane));
                 }
                 for (auto s : used_ck_in) {
                     if (boost::contains(s, "HROW_CK_INT"))
