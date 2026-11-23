@@ -1575,18 +1575,21 @@ void XC7Packer::merge_idelayctrls(const std::vector<CellInfo *> &idelayctrls)
 {
     CellInfo *keep = idelayctrls.front();
     NetInfo *refclk = keep->getPort(id_REFCLK);
-    for (CellInfo *other : idelayctrls)
-        if (other->getPort(id_REFCLK) != refclk)
+    for (CellInfo *other : idelayctrls) {
+        const bool refclk_differs = other->getPort(id_REFCLK) != refclk;
+        if (refclk_differs)
             log_error("IDELAYCTRL cells '%s' and '%s' have different REFCLK nets; several IDELAYCTRLs are only "
                       "supported on a shared REFCLK (IODELAY_GROUP is not supported)\n",
                       ctx->nameOf(keep), ctx->nameOf(other));
+    }
 
     // A reset tied low resets nothing, so it does not take part in the OR.
     std::vector<NetInfo *> resets;
     for (CellInfo *ci : idelayctrls) {
         NetInfo *rst = ci->getPort(id_RST);
-        bool resets_nothing = rst == nullptr || rst->name == ctx->id("$PACKER_GND_NET");
-        if (!resets_nothing && std::find(resets.begin(), resets.end(), rst) == resets.end())
+        const bool resets_something = rst != nullptr && rst->name != ctx->id("$PACKER_GND_NET");
+        const bool reset_is_new = resets_something && std::find(resets.begin(), resets.end(), rst) == resets.end();
+        if (reset_is_new)
             resets.push_back(rst);
     }
     NetInfo *merged_rst = resets.empty() ? nullptr : resets.front();
@@ -1596,7 +1599,8 @@ void XC7Packer::merge_idelayctrls(const std::vector<CellInfo *> &idelayctrls)
                    Property(14));
         merged_rst = ored;
     }
-    if (merged_rst != nullptr && keep->getPort(id_RST) != merged_rst) {
+    const bool keep_needs_merged_rst = merged_rst != nullptr && keep->getPort(id_RST) != merged_rst;
+    if (keep_needs_merged_rst) {
         keep->disconnectPort(id_RST);
         keep->connectPort(id_RST, merged_rst);
     }
@@ -1604,23 +1608,28 @@ void XC7Packer::merge_idelayctrls(const std::vector<CellInfo *> &idelayctrls)
     NetInfo *rdy = keep->getPort(id_RDY);
     std::vector<std::string> merged_names;
     for (CellInfo *other : idelayctrls) {
-        if (other == keep)
+        const bool is_the_kept_one = other == keep;
+        if (is_the_kept_one)
             continue;
         merged_names.push_back(other->name.str(ctx));
         NetInfo *other_rdy = other->getPort(id_RDY);
         other->disconnectPort(id_RDY);
-        if (other_rdy == nullptr || other_rdy == rdy) {
+        const bool nothing_to_move = other_rdy == nullptr || other_rdy == rdy;
+        if (nothing_to_move) {
             // nothing to move
-        } else if (rdy == nullptr) {
-            keep->connectPort(id_RDY, other_rdy);
-            rdy = other_rdy;
         } else {
-            std::vector<PortRef> users;
-            for (const PortRef &usr : other_rdy->users)
-                users.push_back(usr);
-            for (const PortRef &usr : users) {
-                usr.cell->disconnectPort(usr.port);
-                usr.cell->connectPort(usr.port, rdy);
+            const bool keep_has_no_rdy = rdy == nullptr;
+            if (keep_has_no_rdy) {
+                keep->connectPort(id_RDY, other_rdy);
+                rdy = other_rdy;
+            } else {
+                std::vector<PortRef> users;
+                for (const PortRef &usr : other_rdy->users)
+                    users.push_back(usr);
+                for (const PortRef &usr : users) {
+                    usr.cell->disconnectPort(usr.port);
+                    usr.cell->connectPort(usr.port, rdy);
+                }
             }
         }
         other->disconnectPort(id_REFCLK);
@@ -1636,12 +1645,15 @@ void XC7Packer::pack_idelayctrl()
     std::vector<CellInfo *> idelayctrls;
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
-        if (ci->type == id_IDELAYCTRL)
+        const bool is_idelayctrl = ci->type == id_IDELAYCTRL;
+        if (is_idelayctrl)
             idelayctrls.push_back(ci);
     }
-    if (idelayctrls.empty())
+    const bool no_idelayctrl = idelayctrls.empty();
+    if (no_idelayctrl)
         return;
-    if (idelayctrls.size() > 1) {
+    const bool several_idelayctrls = idelayctrls.size() > 1;
+    if (several_idelayctrls) {
         merge_idelayctrls(idelayctrls);
         flush_cells();
     }
@@ -1680,7 +1692,8 @@ void XC7Packer::pack_idelayctrl()
                 create_cell(id_IDELAYCTRL, int_name(idelayctrl->name, "CTRL_DUP_" + std::to_string(i), false));
         dup_idc->connectPort(id_REFCLK, idelayctrl->getPort(id_REFCLK));
         dup_idc->connectPort(id_RST, idelayctrl->getPort(id_RST));
-        if (idelayctrl->attrs.count(ctx->id("X_MERGED_IDELAYCTRLS")))
+        const bool has_merged_names = idelayctrl->attrs.count(ctx->id("X_MERGED_IDELAYCTRLS"));
+        if (has_merged_names)
             dup_idc->attrs[ctx->id("X_MERGED_IDELAYCTRLS")] = idelayctrl->attrs.at(ctx->id("X_MERGED_IDELAYCTRLS"));
         if (rdy) {
             NetInfo *dup_rdy =
