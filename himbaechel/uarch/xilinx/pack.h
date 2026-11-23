@@ -194,13 +194,13 @@ struct XC7Packer : public XilinxPacker
     dict<IdString, XFormRule> hp_iol_rules, hd_iol_rules, ioctrl_rules;
     void fold_inverter(CellInfo *cell, std::string port);
     void merge_idelayctrls(const std::vector<CellInfo *> &idelayctrls);
-    SiteIndex get_ologic_site(BelId io_bel);
-    SiteIndex get_ilogic_site(BelId io_bel);
+    SiteIndex get_ologic_site(BelId io_bel, const CellInfo *cell);
+    SiteIndex get_ilogic_site(BelId io_bel, const CellInfo *cell);
     SiteIndex get_ilogic_site_for_ologic(SiteIndex ologic_site);
     SiteIndex get_ologic_site_for_ilogic(SiteIndex ilogic_site);
     SiteIndex get_ioctrl_site(BelId io_bel);
-    SiteIndex get_odelay_site(BelId io_bel);
-    SiteIndex get_idelay_site(BelId io_bel);
+    SiteIndex get_odelay_site(BelId io_bel, const CellInfo *cell);
+    SiteIndex get_idelay_site(BelId io_bel, const CellInfo *cell);
     // OSERDESE2 masters whose OFB feeds an ISERDESE2 (loopback, no IOB anchor)
     std::unordered_set<CellInfo *> unconstrained_oserdes;
     // Call before packing constants
