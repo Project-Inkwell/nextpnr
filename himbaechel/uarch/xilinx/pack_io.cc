@@ -1374,9 +1374,9 @@ void XC7Packer::pack_iologic()
             // SHIFTINs are reachable only from the master's SHIFTOUTs, and the
             // site's OCLK and OCLKB inverters only from a clock.  A master
             // ignores its SHIFTINs and a constant clock never clocks, so
-            // treat such a pin as unconnected, as Vivado does.  The tie-off
-            // pass has turned a 0 on OCLK/OCLKB into VCC plus an
-            // IS_..._INVERTED, so that parameter goes too.
+            // treat such a pin as unconnected.  The tie-off pass has turned
+            // a 0 on OCLK/OCLKB into VCC plus an IS_..._INVERTED, so that
+            // parameter goes too.
             auto is_constant = [&](NetInfo *net) {
                 return net != nullptr && (net->name == ctx->id("$PACKER_GND_NET") ||
                                           net->name == ctx->id("$PACKER_VCC_NET"));
