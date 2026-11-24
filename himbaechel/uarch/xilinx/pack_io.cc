@@ -967,7 +967,15 @@ void XC7Packer::check_valid_pad(CellInfo *ci, std::string type)
     log_error("unsupported DRIVE strength %d for port %s\n", drive, ci->name.c_str(ctx));
 }
 
-SiteIndex XC7Packer::get_ologic_site(BelId io_bel)
+// The IOB and IOI tiles of an IO column (LIOB*/RIOB*, LIOI*/RIOI*): the only
+// tiles a walk from a pad to its IOLOGIC or IODELAY site needs.
+static bool is_io_column_tile(const Context *ctx, int tile)
+{
+    const std::string type = ctx->get_tile_type(tile).str(ctx);
+    return boost::starts_with(type, "LIO") || boost::starts_with(type, "RIO");
+}
+
+SiteIndex XC7Packer::get_ologic_site(BelId io_bel, const CellInfo *cell)
 {
     BelId ibc_bel;
     if (boost::contains(uarch->bel_name_in_site(io_bel).str(ctx), "IOB18"))
@@ -976,8 +984,17 @@ SiteIndex XC7Packer::get_ologic_site(BelId io_bel)
         ibc_bel = uarch->get_site_bel(uarch->get_bel_site(io_bel), ctx->id("IOB33.OUTBUF"));
     NPNR_ASSERT(ibc_bel != BelId());
 
+    // The site is in the IOI tile next to the pad: the walk stays in the IO
+    // column and queues each wire once. Without these limits, a pad whose site
+    // is not wired to it in the chipdb led the walk out through an IOLOGIC
+    // route-through (OLOGIC D1 -> OQ) into the fabric, where it re-queued wires
+    // until memory ran out; with a visited set alone it ended minutes later on
+    // an OLOGIC of another bank.
     std::queue<WireId> visit;
-    visit.push(ctx->getBelPinWire(ibc_bel, id_IN));
+    pool<WireId> queued;
+    WireId start = ctx->getBelPinWire(ibc_bel, id_IN);
+    visit.push(start);
+    queued.insert(start);
 
     while (!visit.empty()) {
         WireId cursor = visit.front();
@@ -987,13 +1004,23 @@ SiteIndex XC7Packer::get_ologic_site(BelId io_bel)
             if (boost::starts_with(uarch->get_site_name(site).str(ctx), "OLOGIC"))
                 return site;
         }
-        for (auto pip : ctx->getPipsUphill(cursor))
-            visit.push(ctx->getPipSrcWire(pip));
+        for (auto pip : ctx->getPipsUphill(cursor)) {
+            WireId next = ctx->getPipSrcWire(pip);
+            const bool already_queued = queued.count(next) > 0;
+            if (already_queued)
+                continue;
+            queued.insert(next);
+            const bool next_in_io_column = is_io_column_tile(ctx, next.tile);
+            if (!next_in_io_column)
+                continue;
+            visit.push(next);
+        }
     }
-    NPNR_ASSERT_FALSE("failed to find OLOGIC");
+    log_error("%s '%s': no OLOGIC site is connected to the pad at site %s in this device's chipdb\n",
+              cell->type.c_str(ctx), ctx->nameOf(cell), uarch->get_site_name(uarch->get_bel_site(io_bel)).c_str(ctx));
 }
 
-SiteIndex XC7Packer::get_ilogic_site(BelId io_bel)
+SiteIndex XC7Packer::get_ilogic_site(BelId io_bel, const CellInfo *cell)
 {
     BelId ibc_bel;
     if (boost::contains(uarch->bel_name_in_site(io_bel).str(ctx), "IOB18"))
@@ -1003,8 +1030,12 @@ SiteIndex XC7Packer::get_ilogic_site(BelId io_bel)
 
     NPNR_ASSERT(ibc_bel != BelId());
 
+    // The walk stays in the IO column and queues each wire once, as in get_ologic_site().
     std::queue<WireId> visit;
-    visit.push(ctx->getBelPinWire(ibc_bel, id_OUT));
+    pool<WireId> queued;
+    WireId start = ctx->getBelPinWire(ibc_bel, id_OUT);
+    visit.push(start);
+    queued.insert(start);
 
     while (!visit.empty()) {
         WireId cursor = visit.front();
@@ -1014,13 +1045,23 @@ SiteIndex XC7Packer::get_ilogic_site(BelId io_bel)
             if (boost::starts_with(uarch->get_site_name(site).str(ctx), "ILOGIC"))
                 return site;
         }
-        for (auto pip : ctx->getPipsDownhill(cursor))
-            visit.push(ctx->getPipDstWire(pip));
+        for (auto pip : ctx->getPipsDownhill(cursor)) {
+            WireId next = ctx->getPipDstWire(pip);
+            const bool already_queued = queued.count(next) > 0;
+            if (already_queued)
+                continue;
+            queued.insert(next);
+            const bool next_in_io_column = is_io_column_tile(ctx, next.tile);
+            if (!next_in_io_column)
+                continue;
+            visit.push(next);
+        }
     }
-    NPNR_ASSERT_FALSE("failed to find ILOGIC");
+    log_error("%s '%s': no ILOGIC site is connected to the pad at site %s in this device's chipdb\n",
+              cell->type.c_str(ctx), ctx->nameOf(cell), uarch->get_site_name(uarch->get_bel_site(io_bel)).c_str(ctx));
 }
 
-SiteIndex XC7Packer::get_idelay_site(BelId io_bel)
+SiteIndex XC7Packer::get_idelay_site(BelId io_bel, const CellInfo *cell)
 {
     BelId ibc_bel;
     if (boost::contains(uarch->bel_name_in_site(io_bel).str(ctx), "IOB18"))
@@ -1030,8 +1071,12 @@ SiteIndex XC7Packer::get_idelay_site(BelId io_bel)
 
     NPNR_ASSERT(ibc_bel != BelId());
 
+    // The walk stays in the IO column and queues each wire once, as in get_ologic_site().
     std::queue<WireId> visit;
-    visit.push(ctx->getBelPinWire(ibc_bel, id_OUT));
+    pool<WireId> queued;
+    WireId start = ctx->getBelPinWire(ibc_bel, id_OUT);
+    visit.push(start);
+    queued.insert(start);
 
     while (!visit.empty()) {
         WireId cursor = visit.front();
@@ -1041,13 +1086,23 @@ SiteIndex XC7Packer::get_idelay_site(BelId io_bel)
             if (boost::starts_with(uarch->get_site_name(site).str(ctx), "IDELAY"))
                 return site;
         }
-        for (auto pip : ctx->getPipsDownhill(cursor))
-            visit.push(ctx->getPipDstWire(pip));
+        for (auto pip : ctx->getPipsDownhill(cursor)) {
+            WireId next = ctx->getPipDstWire(pip);
+            const bool already_queued = queued.count(next) > 0;
+            if (already_queued)
+                continue;
+            queued.insert(next);
+            const bool next_in_io_column = is_io_column_tile(ctx, next.tile);
+            if (!next_in_io_column)
+                continue;
+            visit.push(next);
+        }
     }
-    NPNR_ASSERT_FALSE("failed to find IDELAY");
+    log_error("%s '%s': no IDELAY site is connected to the pad at site %s in this device's chipdb\n",
+              cell->type.c_str(ctx), ctx->nameOf(cell), uarch->get_site_name(uarch->get_bel_site(io_bel)).c_str(ctx));
 }
 
-SiteIndex XC7Packer::get_odelay_site(BelId io_bel)
+SiteIndex XC7Packer::get_odelay_site(BelId io_bel, const CellInfo *cell)
 {
     BelId obc_bel;
     if (boost::contains(uarch->bel_name_in_site(io_bel).str(ctx), "IOB18"))
@@ -1056,8 +1111,12 @@ SiteIndex XC7Packer::get_odelay_site(BelId io_bel)
         log_error("BEL %s is located on a high range bank. High range banks do not have ODELAY\n",
                   ctx->nameOfBel(io_bel));
 
+    // The walk stays in the IO column and queues each wire once, as in get_ologic_site().
     std::queue<WireId> visit;
-    visit.push(ctx->getBelPinWire(obc_bel, id_IN));
+    pool<WireId> queued;
+    WireId start = ctx->getBelPinWire(obc_bel, id_IN);
+    visit.push(start);
+    queued.insert(start);
 
     while (!visit.empty()) {
         WireId cursor = visit.front();
@@ -1067,10 +1126,20 @@ SiteIndex XC7Packer::get_odelay_site(BelId io_bel)
             if (boost::starts_with(uarch->get_site_name(site).str(ctx), "ODELAY"))
                 return site;
         }
-        for (auto pip : ctx->getPipsUphill(cursor))
-            visit.push(ctx->getPipSrcWire(pip));
+        for (auto pip : ctx->getPipsUphill(cursor)) {
+            WireId next = ctx->getPipSrcWire(pip);
+            const bool already_queued = queued.count(next) > 0;
+            if (already_queued)
+                continue;
+            queued.insert(next);
+            const bool next_in_io_column = is_io_column_tile(ctx, next.tile);
+            if (!next_in_io_column)
+                continue;
+            visit.push(next);
+        }
     }
-    NPNR_ASSERT_FALSE("failed to find ODELAY");
+    log_error("%s '%s': no ODELAY site is connected to the pad at site %s in this device's chipdb\n",
+              cell->type.c_str(ctx), ctx->nameOf(cell), uarch->get_site_name(uarch->get_bel_site(io_bel)).c_str(ctx));
 }
 
 SiteIndex XC7Packer::get_ioctrl_site(BelId io_bel)
@@ -1181,7 +1250,7 @@ void XC7Packer::pack_iologic()
             else
                 log_error("%s '%s' has IDATAIN input connected to illegal cell type %s\n", ci->type.c_str(ctx),
                           ctx->nameOf(ci), drv->type.c_str(ctx));
-            SiteIndex iol_site = get_idelay_site(io_bel);
+            SiteIndex iol_site = get_idelay_site(io_bel, ci);
 
             BelId idelay_bel = uarch->get_site_bel(iol_site, id_IDELAYE2);
             NPNR_ASSERT(idelay_bel != BelId());
@@ -1213,7 +1282,7 @@ void XC7Packer::pack_iologic()
                     log_error("%s '%s' has DATAOUT connected to unsupported cell type %s\n", ci->type.c_str(ctx),
                               ctx->nameOf(ci), user_type.c_str());
             }
-            SiteIndex iol_site = get_odelay_site(io_bel);
+            SiteIndex iol_site = get_odelay_site(io_bel, ci);
 
             BelId odelay_bel = uarch->get_site_bel(iol_site, id_ODELAYE2);
             NPNR_ASSERT(odelay_bel != BelId());
@@ -1237,7 +1306,7 @@ void XC7Packer::pack_iologic()
                 io_bel = ob->bel;
             else
                 log_error("%s '%s' has illegal fanout on Q output\n", ci->type.c_str(ctx), ctx->nameOf(ci));
-            SiteIndex ol_site = get_ologic_site(io_bel);
+            SiteIndex ol_site = get_ologic_site(io_bel, ci);
 
             PortRef dest_port = *q->users.begin();
             auto is_tristate = dest_port.port == id_TRI;
@@ -1308,7 +1377,7 @@ void XC7Packer::pack_iologic()
                     log_error("%s '%s' has illegal fanout on OQ or OFB output\n", ci->type.c_str(ctx), ctx->nameOf(ci));
                 }
 
-                SiteIndex ol_site = get_ologic_site(io_bel);
+                SiteIndex ol_site = get_ologic_site(io_bel, ci);
 
                 BelId oserdes_bel = uarch->get_site_bel(ol_site, id_OSERDESE2);
                 NPNR_ASSERT(oserdes_bel != BelId());
@@ -1372,7 +1441,7 @@ void XC7Packer::pack_iologic()
                 log_error("%s '%s' has D input connected to illegal cell type %s\n", ci->type.c_str(ctx),
                           ctx->nameOf(ci), drv->type.c_str(ctx));
 
-            SiteIndex il_site = get_ilogic_site(io_bel);
+            SiteIndex il_site = get_ilogic_site(io_bel, ci);
 
             BelId iddr_bel = uarch->get_site_bel(il_site, ctx->id("IFF"));
             NPNR_ASSERT(iddr_bel != BelId());
@@ -1434,7 +1503,7 @@ void XC7Packer::pack_iologic()
                           iobdelay.c_str());
             }
 
-            SiteIndex il_site = get_ilogic_site(io_bel);
+            SiteIndex il_site = get_ilogic_site(io_bel, ci);
 
             BelId iserdes_bel = uarch->get_site_bel(il_site, id_ISERDESE2);
             NPNR_ASSERT(iserdes_bel != BelId());
