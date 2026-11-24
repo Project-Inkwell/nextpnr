@@ -1467,8 +1467,8 @@ void XC7Packer::pack_iologic()
             };
             const bool is_slave = str_or_default(ci->params, id_SERDES_MODE, "MASTER") == "SLAVE";
             for (IdString port : {id_SHIFTIN1, id_SHIFTIN2}) {
-                const bool shiftin_is_constant = is_constant(ci->getPort(port));
-                if (!shiftin_is_constant)
+                const bool shiftin_is_not_constant = !is_constant(ci->getPort(port));
+                if (shiftin_is_not_constant)
                     continue;
                 const bool shiftin_requires_master = is_slave;
                 if (shiftin_requires_master)
@@ -1479,8 +1479,8 @@ void XC7Packer::pack_iologic()
             }
             const std::string interface_type = str_or_default(ci->params, id_INTERFACE_TYPE, "NETWORKING");
             for (IdString port : {id_OCLK, id_OCLKB}) {
-                const bool oclk_is_constant = is_constant(ci->getPort(port));
-                if (!oclk_is_constant)
+                const bool oclk_is_not_constant = !is_constant(ci->getPort(port));
+                if (oclk_is_not_constant)
                     continue;
                 const bool interface_uses_oclk = interface_type != "NETWORKING";
                 if (interface_uses_oclk)
