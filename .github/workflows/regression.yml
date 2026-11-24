@@ -38,7 +38,7 @@ env:
   # carrying the cases.  Fixed revisions, because the chipdb decides what the
   # cases do.
   PRJXRAY_DB_REV: a8b09269beb6e3d3c07e2a0901f845420df1c802
-  DEMO_PROJECTS_REV: 9c28da3ed04f2cbce13c49fd9fa7f30cdc30d5a9
+  DEMO_PROJECTS_REV: d2118fad426c8db3f93132192ec611487ea0377a
 
 jobs:
   regression:
@@ -144,8 +144,10 @@ jobs:
           # Then #191 (report-used-within-available), #192 (bel-attribute),
           # #193 (xdc-skipped-targets), #194 (diff-pair-n-from-package),
           # #187 (carry-lut-pair-const-inputs) and #204 (ibufds-diff-out,
-          # iob-primitive-unpacked). The last name is pad-user-io: the PAD row
-          # counts user I/O only, and part-utilisation expects that count.
+          # iob-primitive-unpacked). Then pad-user-io: the PAD row counts user
+          # I/O only, and part-utilisation expects that count. The last name is
+          # iserdes-bitslip-open: an ISERDESE2 whose BITSLIP the design leaves
+          # open has it tied to GND, as Vivado does.
           demo-projects/regression/run.sh \
             clock-srcc-bufg bram-sdp-unused-port bufg-fabric-driven \
             config-primitive-startupe2 iddr-four-iff-flops \
@@ -169,7 +171,8 @@ jobs:
             bel-attribute xdc-skipped-targets diff-pair-n-from-package \
             carry-lut-pair-const-inputs \
             ibufds-diff-out iob-primitive-unpacked \
-            pad-user-io
+            pad-user-io \
+            iserdes-bitslip-open
 
       # Failing today, on purpose and by name.  These three cases are a gap of
       # this engine alone, with no counterpart in the fork; PR #56 is still open.
