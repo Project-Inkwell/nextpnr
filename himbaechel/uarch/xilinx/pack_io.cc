@@ -1452,6 +1452,47 @@ void XC7Packer::pack_iologic()
             fold_inverter(ci, "CLKB");
             fold_inverter(ci, "OCLKB");
 
+            // A constant on SHIFTIN1/2, OCLK or OCLKB cannot be routed: the
+            // SHIFTINs are reachable only from the master's SHIFTOUTs, and the
+            // site's OCLK and OCLKB inverters only from a clock.  A master
+            // ignores its SHIFTINs, and in NETWORKING mode OCLK is unused, so
+            // treat such a pin as unconnected.  The tie-off pass has turned
+            // a 0 on OCLK/OCLKB into VCC plus an IS_..._INVERTED, so that
+            // parameter goes too.  The MEMORY and OVERSAMPLE modes capture
+            // on OCLK, so there a constant one is an error.
+            auto is_constant = [&](NetInfo *net) {
+                return net != nullptr && (net->name == ctx->id("$PACKER_GND_NET") ||
+                                          net->name == ctx->id("$PACKER_VCC_NET"));
+            };
+            const bool is_slave = str_or_default(ci->params, id_SERDES_MODE, "MASTER") == "SLAVE";
+            for (IdString port : {id_SHIFTIN1, id_SHIFTIN2}) {
+                if (!is_constant(ci->getPort(port)))
+                    continue;
+                if (is_slave)
+                    log_error("%s '%s' is a SLAVE with %s tied to a constant; it must come from the master's "
+                              "SHIFTOUT%c\n",
+                              ci->type.c_str(ctx), ctx->nameOf(ci), port.c_str(ctx), port.str(ctx).back());
+                ci->disconnectPort(port);
+            }
+            const std::string interface_type = str_or_default(ci->params, id_INTERFACE_TYPE, "NETWORKING");
+            for (IdString port : {id_OCLK, id_OCLKB}) {
+                if (!is_constant(ci->getPort(port)))
+                    continue;
+                if (interface_type != "NETWORKING")
+                    log_error("%s '%s' has %s tied to a constant, but INTERFACE_TYPE %s needs a clock on it\n",
+                              ci->type.c_str(ctx), ctx->nameOf(ci), port.c_str(ctx), interface_type.c_str());
+                ci->disconnectPort(port);
+                // Found by name rather than with ctx->idf, which would intern a
+                // new IdString and shift every id created after it.
+                const std::string inverted = "IS_" + port.str(ctx) + "_INVERTED";
+                for (auto it = ci->params.begin(); it != ci->params.end(); ++it) {
+                    if (it->first.str(ctx) == inverted) {
+                        ci->params.erase(it);
+                        break;
+                    }
+                }
+            }
+
             // OFB loopback: the data path is the partner OSERDESE2's OFB
             // output, so the cell has no IOB / IDELAYE2 to anchor on and is
             // bound next to its OSERDESE2 in the unconstrained pass below.
