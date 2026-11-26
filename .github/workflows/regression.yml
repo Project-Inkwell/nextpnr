@@ -38,7 +38,7 @@ env:
   # carrying the cases.  Fixed revisions, because the chipdb decides what the
   # cases do.
   PRJXRAY_DB_REV: a8b09269beb6e3d3c07e2a0901f845420df1c802
-  DEMO_PROJECTS_REV: 9d3d2de73a7fc69d9b87a5557b720982994e06ee
+  DEMO_PROJECTS_REV: 730096d9c38ba3b95a106253b844376079c5b241
 
 jobs:
   regression:
@@ -100,7 +100,7 @@ jobs:
             -DARCH=himbaechel -DHIMBAECHEL_UARCH=xilinx \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_PYTHON=ON \
             -DHIMBAECHEL_PRJXRAY_DB="$PWD/prjxray-db" \
-            -DHIMBAECHEL_XILINX_DEVICES="xc7a50t;xc7a200t;xc7z010"
+            -DHIMBAECHEL_XILINX_DEVICES="xc7a50t;xc7a200t;xc7z010;xc7z030"
 
       - name: Build nextpnr-himbaechel and the chipdbs
         run: cmake --build build --target nextpnr-himbaechel -j"$(nproc)"
@@ -116,6 +116,8 @@ jobs:
           cp chipdb-xc7a50t.bin   ../../../../run/chipdb/xc7a35tcsg324.bin
           # pad-user-io is an xc7a35tcpg236: the same xc7a50t die, another package.
           cp chipdb-xc7a50t.bin   ../../../../run/chipdb/xc7a35tcpg236.bin
+          # zynq-hp-oddr is an xc7z030fbg676: an HP bank of a Zynq.
+          cp chipdb-xc7z030.bin   ../../../../run/chipdb/xc7z030fbg676.bin
           cd ../../../../run
           install -m 755 ../nextpnr/.github/scripts/nextpnr-xilinx-shim.sh bin/nextpnr-xilinx
           ls -la bin chipdb
@@ -149,9 +151,11 @@ jobs:
           # iserdes-bitslip-open: an ISERDESE2 whose BITSLIP the design leaves
           # open has it tied to GND, as Vivado does. Then clock-row-crossed: a
           # global clock line is active in every clock row it crosses on its
-          # way from the BUFG, as Vivado sets it. The last name is
-          # iserdes-oclk-tie0: an ISERDESE2 in NETWORKING mode whose OCLK is
-          # tied to 0 leaves it unconnected instead of inverting it onto VCC.
+          # way from the BUFG, as Vivado sets it. Then iserdes-oclk-tie0: an
+          # ISERDESE2 in NETWORKING mode whose OCLK is tied to 0 leaves it
+          # unconnected instead of inverting it onto VCC. The last name is
+          # zynq-hp-oddr: an ODDR in an HP bank of a Zynq needs the OLOGIC site
+          # in the chipdb.
           demo-projects/regression/run.sh \
             clock-srcc-bufg bram-sdp-unused-port bufg-fabric-driven \
             config-primitive-startupe2 iddr-four-iff-flops \
@@ -178,7 +182,8 @@ jobs:
             pad-user-io \
             iserdes-bitslip-open \
             clock-row-crossed \
-            iserdes-oclk-tie0
+            iserdes-oclk-tie0 \
+            zynq-hp-oddr
 
       # Failing today, on purpose and by name.  These three cases are a gap of
       # this engine alone, with no counterpart in the fork; PR #56 is still open.
