@@ -1266,6 +1266,7 @@ void XilinxImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
     cfg.glbBufTypes.insert(id_BUFG_BUFG);
     if (ctx->args.device.size() >= 4 && ctx->args.device.substr(0, 4) == "xcku") {
         cfg.glbBufTypes.insert(id_BUFCE_BUFCE);
+        cfg.glbBufTypes.insert(ctx->id("BUFG_GT_BUFG_GT"));
     }
 
     cfg.timing_c = 500;

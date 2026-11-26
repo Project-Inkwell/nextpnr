@@ -287,6 +287,15 @@ void XC7Packer::prepare_clocking()
             ci->type = id_BUFCE_BUFCE;
             if (is_bufg)
                 tie_port(ci, "CE", true, true);
+        } else if (has_bufce_sites && ci->type == ctx->id("BUFG_GT")) {
+            ci->type = ctx->id("BUFG_GT_BUFG_GT");
+            for (int i = 0; i < 3; i++) {
+                IdString old_p = ctx->idf("DIV[%d]", i);
+                if (ci->ports.count(old_p))
+                    ci->renamePort(old_p, ctx->idf("DIV%d", i));
+            }
+        } else if (has_bufce_sites && ci->type == ctx->id("BUFG_GT_SYNC")) {
+            ci->type = ctx->id("BUFG_GT_BUFG_GT_SYNC");
         } else if (ci->type == id_BUFG) {
             ci->type = id_BUFGCTRL;
             ci->renamePort(id_I, id_I0);
@@ -609,7 +618,8 @@ void XilinxImpl::route_clocks()
                                  (*clk_net->users.begin()).cell->type == id_BUFR_BUFR &&
                                  (*clk_net->users.begin()).port == id_I;
         bool is_global = false;
-        if ((clk_net->driver.cell->type.in(id_BUFGCTRL, id_BUFCE_BUFG_PS, id_BUFCE_BUFCE, id_BUFGCE_DIV_BUFGCE_DIV)) &&
+        if ((clk_net->driver.cell->type.in(id_BUFGCTRL, id_BUFCE_BUFG_PS, id_BUFCE_BUFCE, id_BUFGCE_DIV_BUFGCE_DIV) ||
+             clk_net->driver.cell->type.str(ctx) == "BUFG_GT_BUFG_GT") &&
             clk_net->driver.port == id_O)
             is_global = true;
         else if (driven_by_bufr)

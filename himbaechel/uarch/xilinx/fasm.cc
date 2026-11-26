@@ -5899,6 +5899,35 @@ struct FasmBackend
                     bool driven = net != nullptr && net->driver.cell != nullptr && !usplus_constant(net);
                     write_usplus_setting(ci->bel, pin.second + "_ACTIVE", driven ? "TRUE" : "FALSE");
                 }
+            } else if (ci->type.str(ctx) == "GTYE4_CHANNEL_GTYE4_CHANNEL" ||
+                       ci->type.str(ctx) == "GTYE4_COMMON_GTYE4_COMMON" ||
+                       ci->type.str(ctx) == "PCIE40E4_PCIE40E4" || ci->type.str(ctx) == "IBUFDS0_GTYE4" ||
+                       ci->type.str(ctx) == "IBUFDS1_GTYE4" || ci->type.str(ctx) == "BUFG_GT_BUFG_GT" ||
+                       ci->type.str(ctx) == "BUFG_GT_BUFG_GT_SYNC") {
+                const std::string element = usplus_element(ci->bel);
+                if (ci->params.empty())
+                    out << element << ".USED" << std::endl;
+                for (auto &param : ci->params) {
+                    const std::string name = param.first.str(ctx);
+                    const Property &value = param.second;
+                    if (value.is_string) {
+                        out << element << "." << name << "." << value.as_string() << std::endl;
+                    } else if (value.str.size() == 32 && !boost::starts_with(name, "RX_DFE_KL_CFG2") &&
+                               !boost::starts_with(name, "ACJTAG_") && !boost::starts_with(name, "RXPRBS_")) {
+                        // Yosys encodes Verilog integer parameters (e.g. TX_DATA_WIDTH(20),
+                        // CPLL_FBDIV(5), QPLL0_FBDIV(80)) as 32-bit binary vectors; Vivado's
+                        // sites.txt states them as decimal integers.
+                        out << element << "." << name << "." << value.as_int64() << std::endl;
+                    } else if (value.str.size() >= 1 && value.str.size() <= 256) {
+                        out << element << "." << name << "[" << (value.str.size() - 1) << ":0] = " << value.str.size()
+                            << "'b";
+                        for (int i = int(value.str.size()) - 1; i >= 0; i--)
+                            out << (value.str.at(i) == '1' ? '1' : '0');
+                        out << std::endl;
+                    } else {
+                        out << element << "." << name << "." << value.as_int64() << std::endl;
+                    }
+                }
             }
         }
     }

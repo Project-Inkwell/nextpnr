@@ -508,7 +508,51 @@ void XC7Packer::pack_io()
     }
     std::vector<std::pair<CellInfo *, PortRef>> pad_and_buf;
     for (auto ci : npnr_io) {
-        pad_and_buf.push_back(insert_pad_and_buf(ci));
+        auto pair = insert_pad_and_buf(ci);
+        if (boost::starts_with(ctx->args.device, "xcku") && pair.second.cell != nullptr) {
+            CellInfo *buf = pair.second.cell;
+            // UltraScale+ GT refclk and serial pads live inside GTYE4_COMMON/GTYE4_CHANNEL sites.
+            // Yosys cells_xtra.v omits (* iopad_external_pin *) on GTYE4_CHANNEL serial pins, so
+            // iopadmap wraps GTYRXP/N in IBUF and GTYTXP/N in OBUF; unwrap those too.
+            // Do not copy PACKAGE_PIN onto gt: apply_loc_constraints skips cells with PACKAGE_PIN.
+            CellInfo *gt = nullptr;
+            IdString gt_port;
+            if (buf->type == id_IBUFDS_GTE4 || buf->type.str(ctx) == "GTYE4_CHANNEL") {
+                gt = buf;
+                gt_port = pair.second.port;
+            } else if (buf->type == id_IBUF) {
+                NetInfo *o = buf->getPort(id_O);
+                if (o != nullptr && o->users.entries() == 1) {
+                    const PortRef &u = *o->users.begin();
+                    if (u.cell->type.str(ctx) == "GTYE4_CHANNEL" &&
+                        (u.port == ctx->id("GTYRXP") || u.port == ctx->id("GTYRXN"))) {
+                        gt = u.cell;
+                        gt_port = u.port;
+                    }
+                }
+            } else if (buf->type == id_OBUF) {
+                NetInfo *in = buf->getPort(id_I);
+                if (in != nullptr && in->driver.cell != nullptr &&
+                    in->driver.cell->type.str(ctx) == "GTYE4_CHANNEL" &&
+                    (in->driver.port == ctx->id("GTYTXP") || in->driver.port == ctx->id("GTYTXN"))) {
+                    gt = in->driver.cell;
+                    gt_port = in->driver.port;
+                }
+            }
+            if (gt != nullptr) {
+                CellInfo *pad = pair.first;
+                gt->disconnectPort(gt_port);
+                pad->disconnectPort(id_PAD);
+                packed_cells.insert(pad->name);
+                if (buf != gt) {
+                    buf->disconnectPort(id_I);
+                    buf->disconnectPort(id_O);
+                    packed_cells.insert(buf->name);
+                }
+                continue;
+            }
+        }
+        pad_and_buf.push_back(pair);
     }
     flush_cells();
     pool<BelId> used_io_bels;
@@ -2148,6 +2192,67 @@ void XC7Packer::pack_gt()
 {
     // Port of nextpnr-xilinx pack_gt_xc7.cc
     log_info("Packing Gigabit Transceivers..\n");
+
+    if (boost::starts_with(ctx->args.device, "xcku")) {
+        dict<IdString, XFormRule> us_rules;
+        for (const auto &p : {std::make_pair("GTYE4_CHANNEL", "GTYE4_CHANNEL_GTYE4_CHANNEL"),
+                              std::make_pair("GTYE4_COMMON", "GTYE4_COMMON_GTYE4_COMMON"),
+                              std::make_pair("PCIE40E4", "PCIE40E4_PCIE40E4")}) {
+            IdString src = ctx->id(p.first), dst = ctx->id(p.second);
+            bool used = false;
+            for (auto &cell : ctx->cells)
+                used |= cell.second->type == src;
+            if (used)
+                us_rules[src].new_type = dst;
+        }
+        if (!us_rules.empty())
+            generic_xform(us_rules, false);
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type == id_IBUFDS_GTE4) {
+                bool use0 = false;
+                if (ci->attrs.count(id_BEL) && boost::contains(ci->attrs.at(id_BEL).as_string(), "IBUFDS0"))
+                    use0 = true;
+                else if (ci->attrs.count(ctx->id("REFCLK_INDEX")) &&
+                         int_or_default(ci->attrs, ctx->id("REFCLK_INDEX"), 1) == 0)
+                    use0 = true;
+                ci->type = ctx->id(use0 ? "IBUFDS0_GTYE4" : "IBUFDS1_GTYE4");
+                if (ci->ports.count(id_I))
+                    ci->disconnectPort(id_I);
+                if (ci->ports.count(id_IB))
+                    ci->disconnectPort(id_IB);
+            }
+        }
+        // Apply LOC constraints on UltraScale+ GT/PCIE4/BUFG_GT cells first,
+        // then preplace BUFG_GT_SYNC and BUFG_GT onto sites reachable from
+        // their driving GTYE4_CHANNEL/IBUFDS_GTE4 clock output.
+        const pool<IdString> gt_types{
+                ctx->id("GTYE4_CHANNEL_GTYE4_CHANNEL"), ctx->id("GTYE4_COMMON_GTYE4_COMMON"),
+                ctx->id("PCIE40E4_PCIE40E4"),           ctx->id("IBUFDS0_GTYE4"),
+                ctx->id("IBUFDS1_GTYE4"),               ctx->id("BUFG_GT_BUFG_GT"),
+                ctx->id("BUFG_GT_BUFG_GT_SYNC")};
+        bool any_gt_loc = std::any_of(ctx->cells.begin(), ctx->cells.end(), [&](const auto &cell) {
+            return gt_types.count(cell.second->type) && cell.second->attrs.count(id_LOC);
+        });
+        if (any_gt_loc)
+            uarch->apply_loc_constraints(gt_types);
+        const IdString id_bufg_gt_sync = ctx->id("BUFG_GT_BUFG_GT_SYNC");
+        const IdString id_bufg_gt = ctx->id("BUFG_GT_BUFG_GT");
+        bool did = false;
+        do {
+            did = false;
+            for (auto &cell : ctx->cells) {
+                CellInfo *ci = cell.second.get();
+                if (ci->bel != BelId())
+                    continue;
+                if (ci->type == id_bufg_gt_sync)
+                    did |= try_preplace(ci, id_CLK);
+                else if (ci->type == id_bufg_gt)
+                    did |= try_preplace(ci, id_I);
+            }
+        } while (did);
+        return;
+    }
 
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();

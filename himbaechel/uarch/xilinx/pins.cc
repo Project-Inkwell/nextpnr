@@ -492,6 +492,10 @@ void get_top_level_pins(Context *ctx, dict<IdString, pool<IdString>> &toplevel_p
     toplevel_pins[id_OBUFDS] = {id_O, id_OB};
     toplevel_pins[id_OBUFDS_GTE3] = {id_O, id_OB};
     toplevel_pins[id_OBUFDS_GTE3_ADV] = {id_O, id_OB};
+    if (ctx->args.device.size() >= 4 && ctx->args.device.substr(0, 4) == "xcku") {
+        toplevel_pins[ctx->id("GTYE4_CHANNEL")] = {ctx->id("GTYRXP"), ctx->id("GTYRXN"), ctx->id("GTYTXP"),
+                                                   ctx->id("GTYTXN")};
+    }
     toplevel_pins[id_OBUFDS_GTE4] = {id_O, id_OB};
     toplevel_pins[id_OBUFDS_GTE4_ADV] = {id_O, id_OB};
     toplevel_pins[id_OBUFTDS] = {id_O, id_OB};
