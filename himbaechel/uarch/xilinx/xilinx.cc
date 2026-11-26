@@ -136,9 +136,13 @@ void XilinxImpl::init_database(Arch *arch)
     // use (1, 2, 3, 2L, 1IL, 1Q) and nothing else.  1IL and 1Q are
     // Spartan-7 grades; the previous pattern ([0-9]L?) rejected them.
     // The grade selects the chipdb's timing where it is timed per grade.
+    //
+    // A Kintex UltraScale+ part (xcku3p-ffvb676-2-e) puts a dash before its
+    // package, and a temperature grade (e, i) after its speed grade, which
+    // has a low-power variant (1L, 2L).
     std::regex devicere = std::regex(
-            "(xc7z007s|xc7z012s|xc7z014s|xc7[azks]\\d+t?|xc7vx\\d+t?)"
-            "([a-z0-9]*)(?:-(1IL|1Q|2L|[123]))?");
+            "(xc7z007s|xc7z012s|xc7z014s|xc7[azks]\\d+t?|xc7vx\\d+t?|xcku\\d+p)"
+            "-?([a-z0-9]*)(?:-(1IL|1Q|1L|2L|[123]))?(?:-[ei])?");
     if (!std::regex_match(args.device, match, devicere)) {
         log_error("Invalid device %s\n", args.device.c_str());
     }
@@ -499,6 +503,26 @@ if (cell.second->type.in(id_BUFR, id_BUFR_BUFR)) {
                                     boost::starts_with(ss, "CLK_BUFG_BUFGCTRL") &&
                                     (boost::ends_with(ss, "_I0") || boost::ends_with(ss, "_I1"));
             if (through_bufgctrl)
+                return true;
+        }
+        // On UltraScale+, CMT_L / RCLK_HDIO / GTY_R carry site-through pseudo-pips
+        // across BUFGCE / BUFGCE_DIV / BUFGCTRL / BUFG_GT buffers (CLK_IN[_PIN] -> CLK_OUT).
+        // Routing a clock through an unused buffer site leaves the buffer disabled on
+        // hardware, gating the clock off completely.
+        if (tts == "CMT_L" || tts == "RCLK_HDIO" || tts == "GTY_R") {
+            const auto &tile_data = chip_tile_info(ctx->chip_info, pip.tile);
+            const std::string ds = IdString(tile_data.wires[pip_data.dst_wire].name).str(ctx);
+            const std::string ss = IdString(tile_data.wires[pip_data.src_wire].name).str(ctx);
+            const bool from_clk_in = boost::ends_with(ss, "_CLK_IN") || boost::ends_with(ss, "_CLK_IN_PIN");
+            const bool through_bufg =
+                    (boost::starts_with(ds, "CLK_BUFGCE_") && boost::ends_with(ds, "_CLK_OUT") &&
+                     boost::starts_with(ss, "CLK_BUFGCE_") && from_clk_in) ||
+                    (boost::starts_with(ds, "CLK_BUFGCTRL_") && boost::ends_with(ds, "_CLK_O") &&
+                     boost::starts_with(ss, "CLK_BUFGCTRL_") &&
+                     (boost::ends_with(ss, "_CLK_I0") || boost::ends_with(ss, "_CLK_I1"))) ||
+                    (boost::starts_with(ds, "CLK_BUFG_GT_") && boost::ends_with(ds, "_CLK_OUT") &&
+                     boost::starts_with(ss, "CLK_BUFG_GT_") && from_clk_in);
+            if (through_bufg)
                 return true;
         }
     }
@@ -1231,6 +1255,9 @@ void XilinxImpl::configurePlacerStatic(PlacerStaticCfg &cfg)
     cfg.glbBufTypes.insert(id_PSEUDO_VCC);
     cfg.glbBufTypes.insert(id_BUFGCTRL);
     cfg.glbBufTypes.insert(id_BUFG_BUFG);
+    if (ctx->args.device.size() >= 4 && ctx->args.device.substr(0, 4) == "xcku") {
+        cfg.glbBufTypes.insert(id_BUFCE_BUFCE);
+    }
 
     cfg.timing_c = 500;
     cfg.timing_mx = 25;
@@ -1333,7 +1360,9 @@ void XilinxImpl::preRoute()
             notifyBelChange(ci->bel, ci);
         }
         if (ctx->nets.count(ctx->id("$PACKER_GND_NET"))) {
-            ctx->nets.at(ctx->id("$PACKER_GND_NET"))->constant_value = id_GND;
+            NetInfo *gn = ctx->nets.at(ctx->id("$PACKER_GND_NET")).get();
+            if (gn->driver.cell != nullptr && gn->driver.cell->type == id_PSEUDO_GND)
+                gn->constant_value = id_GND;
         }
         if (ctx->nets.count(ctx->id("$PACKER_VCC_NET"))) {
             ctx->nets.at(ctx->id("$PACKER_VCC_NET"))->constant_value = id_VCC;
@@ -2268,7 +2297,11 @@ namespace {
 struct XilinxArch : HimbaechelArch
 {
     XilinxArch() : HimbaechelArch("xilinx") {};
-    bool match_device(const std::string &device) override { return device.size() > 3 && device.substr(0, 3) == "xc7"; }
+    // A 7-series part, or a Kintex UltraScale+ one (xcku3p-...).
+    bool match_device(const std::string &device) override
+    {
+        return (device.size() > 3 && device.substr(0, 3) == "xc7") || (device.size() > 4 && device.substr(0, 4) == "xcku");
+    }
     std::unique_ptr<HimbaechelAPI> create(const std::string &device) override { return std::make_unique<XilinxImpl>(); }
 } xilinxArch;
 } // namespace

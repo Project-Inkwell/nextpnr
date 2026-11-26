@@ -404,6 +404,27 @@ void XilinxPacker::pack_ffs()
     ff_rules[id_FDSE_1].set_params.emplace_back(id_IS_C_INVERTED, 1);
 
     generic_xform(ff_rules, true);
+
+    // An UltraScale+ slice has no constant inside for a register's reset or
+    // enable: Vivado leaves one that is a constant at its inactive level
+    // unconnected (its SR_ACTIVE or CE_ACTIVE FALSE), and so does this,
+    // rather than route a constant to it across the fabric.
+    if (boost::starts_with(ctx->args.device, "xcku")) {
+        auto is_constant = [](const NetInfo *net, IdString value) { return net != nullptr && net->constant_value == value; };
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_SLICE_FFX)
+                continue;
+            const bool sr_inverted = bool_or_default(ci->params, id_IS_R_INVERTED, false) ||
+                                     bool_or_default(ci->params, id_IS_S_INVERTED, false) ||
+                                     bool_or_default(ci->params, id_IS_CLR_INVERTED, false) ||
+                                     bool_or_default(ci->params, id_IS_PRE_INVERTED, false);
+            if (is_constant(ci->getPort(id_SR), sr_inverted ? id_VCC : id_GND))
+                ci->disconnectPort(id_SR);
+            if (is_constant(ci->getPort(id_CE), id_VCC))
+                ci->disconnectPort(id_CE);
+        }
+    }
 }
 
 bool XilinxPacker::can_add_ff_to_cluster(const CellInfo *lut, const CellInfo *ff)
@@ -1179,8 +1200,14 @@ void XC7Packer::pack_bram()
     bram_rules[id_RAMB36E1].new_type = id_RAMB36E1_RAMB36E1;
 
     // Some ports have upper/lower bel pins in 36-bit mode
+    // Learned from a RAMB36E1 bel, which a part without 7-series block RAM
+    // (an UltraScale+ one) has not: only for a design that holds one.
     std::vector<std::pair<IdString, std::vector<std::string>>> ul_pins;
-    get_bram36_ul_pins(ctx, ul_pins);
+    bool has_ramb36e1 = false;
+    for (auto &cell : ctx->cells)
+        has_ramb36e1 |= cell.second->type == id_RAMB36E1;
+    if (has_ramb36e1)
+        get_bram36_ul_pins(ctx, ul_pins);
     for (auto &ul : ul_pins) {
         for (auto &bp : ul.second)
             bram_rules[id_RAMB36E1].port_multixform[ul.first].push_back(ctx->id(bp));
@@ -1781,6 +1808,29 @@ void XilinxImpl::pack()
         const bool buffer_is_placed = ci->bel != BelId();
         if (is_regional_buffer && buffer_is_placed)
             packer.constrain_regional_clock_sinks(ci);
+    }
+
+    // UltraScale+ INT tiles carry VCC_WIRE only (no GND_WIRE): drive any
+    // remaining $PACKER_GND_NET sinks from a constant-0 SLICE_LUTX, matching
+    // Vivado's O6=0 tie-off LUTs.
+    if (boost::starts_with(ctx->args.device, "xcku")) {
+        auto gnd_it = ctx->nets.find(ctx->id("$PACKER_GND_NET"));
+        if (gnd_it != ctx->nets.end() && !gnd_it->second->users.empty()) {
+            NetInfo *gnd_net = gnd_it->second.get();
+            CellInfo *old_drv = gnd_net->driver.cell;
+            if (old_drv != nullptr && old_drv->type == id_PSEUDO_GND) {
+                old_drv->disconnectPort(id_Y);
+                ctx->cells.erase(old_drv->name);
+            }
+            CellInfo *gnd_lut = ctx->createCell(ctx->id("$PACKER_GND_LUT"), id_SLICE_LUTX);
+            gnd_lut->params[id_INIT] = Property(0, 64);
+            gnd_lut->attrs[id_X_ORIG_TYPE] = Property("LUT1");
+            gnd_lut->addOutput(id_O6);
+            gnd_lut->connectPort(id_O6, gnd_net);
+            gnd_net->constant_value = IdString();
+            log_info("Driven %zu remaining GND sink(s) from constant-0 LUT '$PACKER_GND_LUT'\n",
+                     gnd_net->users.entries());
+        }
     }
 }
 NEXTPNR_NAMESPACE_END

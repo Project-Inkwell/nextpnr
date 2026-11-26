@@ -161,6 +161,12 @@ std::pair<CellInfo *, PortRef> XilinxPacker::insert_pad_and_buf(CellInfo *npnr_i
     return result;
 }
 
+// An UltraScale+ part's IO tile: an HD bank's (HDIO_*) or an HP bank's (HPIO_*).
+static bool is_xcup_io_tile(const std::string &tile_type)
+{
+    return boost::starts_with(tile_type, "HDIO") || boost::starts_with(tile_type, "HPIO");
+}
+
 void XC7Packer::decompose_iob(CellInfo *xil_iob, bool is_hr, const std::string &iostandard)
 {
     bool is_se_ibuf = xil_iob->type.in(id_IBUF, id_IBUF_IBUFDISABLE, id_IBUF_INTERMDISABLE);
@@ -191,6 +197,9 @@ void XC7Packer::decompose_iob(CellInfo *xil_iob, bool is_hr, const std::string &
         if (xil_iob->type.in(id_IBUF_INTERMDISABLE, id_IOBUF_INTERMDISABLE))
             ibuf_type = id_IBUF_INTERMDISABLE;
 
+        if (is_xcup_io_tile(ctx->get_tile_type(site.tile).str(ctx)))
+            log_error("%s '%s': an input buffer on an UltraScale+ bank is not packed yet\n", xil_iob->type.c_str(ctx),
+                      ctx->nameOf(xil_iob));
         CellInfo *inbuf = insert_ibuf(int_name(xil_iob->name, "IBUF", is_se_iobuf), ibuf_type, pad_net, top_out);
         std::string tile = ctx->get_tile_type(site.tile).str(ctx);
         bool is_hp_bank = boost::contains(tile, "IOB18");
@@ -215,7 +224,9 @@ void XC7Packer::decompose_iob(CellInfo *xil_iob, bool is_hr, const std::string &
                 xil_iob->getPort(id_T));
         std::string tile = ctx->get_tile_type(site.tile).str(ctx);
         bool is_hp_bank = boost::contains(tile, "IOB18");
-        if (is_hp_bank)
+        if (is_xcup_io_tile(tile))
+            ctx->bindBel(uarch->get_site_bel(site, ctx->id("OUTBUF")), obuf, STRENGTH_LOCKED);
+        else if (is_hp_bank)
             ctx->bindBel(uarch->get_site_bel(site, ctx->id("IOB18.OUTBUF_DCIEN")), obuf, STRENGTH_LOCKED);
         else
             ctx->bindBel(uarch->get_site_bel(site, ctx->id("IOB33.OUTBUF")), obuf, STRENGTH_LOCKED);
@@ -865,6 +876,12 @@ void XC7Packer::pack_io()
     hpiobuf_rules[id_IBUFGDS] = XFormRule(hpiobuf_rules[id_IBUF]);
     hpiobuf_rules[id_IBUFGDS].port_xform[id_IB] = id_DIFFI_IN;
 
+    // An UltraScale+ bank's output buffer, of either kind of bank.
+    dict<IdString, XFormRule> xcupiobuf_rules;
+    xcupiobuf_rules[id_OBUF].new_type = id_IOB_OUTBUF;
+    xcupiobuf_rules[id_OBUF].port_xform[id_T] = id_TRI;
+    xcupiobuf_rules[id_OBUFT] = XFormRule(xcupiobuf_rules[id_OBUF]);
+
     // Special xform for OBUFx and IBUFx.
     dict<IdString, XFormRule> rules;
     for (auto &cell : ctx->cells) {
@@ -877,7 +894,9 @@ void XC7Packer::pack_io()
         std::string belname =
                 ci->attrs.count(id_BEL) ? ci->attrs[id_BEL].as_string() : std::string(ctx->nameOfBel(ci->bel));
         size_t pos = belname.find(".");
-        if (belname.substr(pos + 1, 5) == "IOB18")
+        if (ci->bel != BelId() && ctx->getBelType(ci->bel) == id_IOB_OUTBUF)
+            rules = xcupiobuf_rules;
+        else if (belname.substr(pos + 1, 5) == "IOB18")
             rules = hpiobuf_rules;
         else if (belname.substr(pos + 1, 5) == "IOB33")
             rules = hriobuf_rules;
@@ -1906,8 +1925,25 @@ void XC7Packer::pack_cfg()
     cfg_rules[id_ICAPE2].new_type = id_ICAP_ICAP;
     cfg_rules[id_FRAME_ECCE2].new_type = id_FRAME_ECC_FRAME_ECC;
     cfg_rules[id_STARTUPE2].new_type = id_STARTUP_STARTUP;
+    // UltraScale+'s: its bel is STARTUP, as Vivado names it.
+    cfg_rules[ctx->id("STARTUPE3")].new_type = ctx->id("STARTUP");
     cfg_rules[id_USR_ACCESSE2].new_type = id_USR_ACCESS_USR_ACCESS;
     generic_xform(cfg_rules);
+
+    // UltraScale+'s STARTUP: a pin a constant drives Vivado leaves
+    // unconnected (its <pin>_ACTIVE FALSE, whichever the constant), and so
+    // does this, rather than route a constant to the configuration block.
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (ci->type != ctx->id("STARTUP"))
+            continue;
+        std::vector<IdString> tied;
+        for (auto &port : ci->ports)
+            if (port.second.type == PORT_IN && port.second.net != nullptr && port.second.net->constant_value != IdString())
+                tied.push_back(port.first);
+        for (auto port : tied)
+            ci->disconnectPort(port);
+    }
 
     // Read once: which site serves which chain is a property of the device,
     // not of any one instance.

@@ -268,12 +268,25 @@ void XC7Packer::prepare_clocking()
     upgrade[id_MMCME2_BASE] = id_MMCME2_ADV;
     upgrade[id_PLLE2_BASE] = id_PLLE2_ADV;
 
+    // An UltraScale+ part's global buffer is a site of its own (BUFGCE, its
+    // bel BUFCE_BUFCE: I, CE, O), not a 7-series BUFGCTRL.
+    bool has_bufce_sites = false;
+    for (auto bel : ctx->getBels())
+        if (ctx->getBelType(bel) == id_BUFCE_BUFCE) {
+            has_bufce_sites = true;
+            break;
+        }
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
         bool is_horizontal_clock_buffer = ci->type == id_BUFH || ci->type == id_BUFHCE;
         if (upgrade.count(ci->type)) {
             IdString new_type = upgrade.at(ci->type);
             ci->type = new_type;
+        } else if (has_bufce_sites && ci->type.in(id_BUFG, id_BUFGCE)) {
+            bool is_bufg = ci->type == id_BUFG;
+            ci->type = id_BUFCE_BUFCE;
+            if (is_bufg)
+                tie_port(ci, "CE", true, true);
         } else if (ci->type == id_BUFG) {
             ci->type = id_BUFGCTRL;
             ci->renamePort(id_I, id_I0);

@@ -5573,6 +5573,280 @@ struct FasmBackend
         }
     }
 
+    // UltraScale+: each feature in the tool's own terms, as the database's
+    // segbits name its bits -- a tile pip
+    // <TILE>.<to>.<from>, a setting of a site's element
+    // <TILE>.<SITE TYPE>_X<place>.<BEL>.<ATTRIBUTE>.<VALUE>, the attribute and
+    // value Vivado's own (an FF's FFINIT INIT1), and a LUT's contents, its
+    // equation's truth table, <TILE>.<SITE TYPE>_X<place>.<BEL>.EQN[63:0].
+    std::string usplus_element(BelId bel)
+    {
+        auto key = BelSiteKey::unpack(chip_bel_info(ctx->chip_info, bel).site);
+        const auto &site = uarch->tile_extra_data(bel.tile)->sites[key.site];
+        return stringf("%s.%s_X%d.%s", uarch->tile_name(bel.tile).c_str(), IdString(site.variants[key.site_variant]).c_str(ctx),
+                       key.site, uarch->bel_name_in_site(bel).c_str(ctx));
+    }
+
+    void write_usplus_setting(BelId bel, const std::string &attribute, const std::string &value)
+    {
+        out << usplus_element(bel) << "." << attribute << "." << value << std::endl;
+    }
+
+    // What Vivado sets in a site a net passes through, by the site's type
+    // (its sites.txt for a site no cell is in): a clock's leaf and row
+    // buffers their test delay's first value, an HD bank's output register
+    // its bypass.
+    void write_usplus_passed(PipId pip)
+    {
+        static const std::vector<std::pair<std::string, std::vector<std::string>>> passed = {
+                {"BUFCE_LEAF", {"LCLK_TEST_DELAY.DELAY.VAL0"}},
+                {"BUFCE_ROW_FSR", {"BUFCE.CE_TYPE.SYNC", "GCLK_TEST_DELAY.DELAY.VAL0"}},
+                {"BUFCE_ROW", {"BUFCE.CE_TYPE.SYNC", "GCLK_TEST_DELAY.DELAY.VAL0"}},
+                {"HDIOLOGIC_M", {"OPFF.BYPASS.BYPASS"}},
+                {"HDIOLOGIC_S", {"OPFF.BYPASS.BYPASS"}},
+        };
+        // The generator gives a route-through pip the site it passes.
+        const auto &extra_data = *reinterpret_cast<const XlnxPipExtraDataPOD *>(chip_pip_info(ctx->chip_info, pip).extra_data.get());
+        if (extra_data.site_key < 0)
+            return;
+        int site = BelSiteKey::unpack(extra_data.site_key).site;
+        const auto &site_data = uarch->tile_extra_data(pip.tile)->sites[site];
+        std::string type = IdString(site_data.variants[0]).str(ctx);
+        for (auto &entry : passed) {
+            if (entry.first != type)
+                continue;
+            for (auto &setting : entry.second)
+                out << stringf("%s.%s_X%d.%s", uarch->tile_name(pip.tile).c_str(), type.c_str(), site, setting.c_str())
+                    << std::endl;
+        }
+    }
+
+    // A wire (node) a net takes through `taken` is driven from that pip's
+    // tile alone: each pip into it from another tile whose driver the
+    // database can leave undriving is left so (`.TRISTATED`), as Vivado
+    // leaves the far end of a clock track it drives from one end.
+    void write_usplus_undriven(WireId wire, PipId taken)
+    {
+        for (PipId pip : ctx->getPipsUphill(wire)) {
+            if (pip == taken || pip.tile == taken.tile)
+                continue;
+            auto &pd = chip_pip_info(ctx->chip_info, pip);
+            const auto &extra_data = *reinterpret_cast<const XlnxPipExtraDataPOD *>(pd.extra_data.get());
+            if (pd.flags != PIP_TILE_ROUTING || !(uint32_t(extra_data.pip_config) & PIP_CFG_TRISTATE))
+                continue;
+            const auto &tile = chip_tile_info(ctx->chip_info, pip.tile);
+            out << uarch->tile_name(pip.tile) << "." << IdString(tile.wires[pd.dst_wire].name).str(ctx) << "."
+                << IdString(tile.wires[pd.src_wire].name).str(ctx) << ".TRISTATED" << std::endl;
+        }
+    }
+
+    // Each pip a net takes: a tile's own -- one passing through a site too,
+    // which UltraScale+ codes as a pip, with what Vivado sets in the site --
+    // and each a site's element sets, named by the element and the pin it
+    // selects (`OUTMUXA.D6`). An inverter passing its input as is (CLK1INV)
+    // is its INVERT's initial FALSE, which turns no bit: it is written by
+    // nothing.
+    void write_usplus_routing()
+    {
+        for (auto &net : ctx->nets) {
+            NetInfo *ni = net.second.get();
+            out << stringf("# routing for net %s", ni->name.c_str(ctx)) << std::endl;
+            for (auto &w : ni->wires) {
+                PipId pip = w.second.pip;
+                if (pip == PipId())
+                    continue;
+                auto dst_intent = ctx->getWireType(ctx->getPipDstWire(pip));
+                if (dst_intent == id_PSEUDO_GND || dst_intent == id_PSEUDO_VCC)
+                    continue;
+                auto &pd = chip_pip_info(ctx->chip_info, pip);
+                const auto &extra_data = *reinterpret_cast<const XlnxPipExtraDataPOD *>(pd.extra_data.get());
+                const auto &tile = chip_tile_info(ctx->chip_info, pip.tile);
+                if (pd.flags == PIP_TILE_ROUTING) {
+                    out << uarch->tile_name(pip.tile) << "." << IdString(tile.wires[pd.dst_wire].name).str(ctx) << "."
+                        << IdString(tile.wires[pd.src_wire].name).str(ctx) << std::endl;
+                    write_usplus_passed(pip);
+                    write_usplus_undriven(w.first, pip);
+                } else if (pd.flags == PIP_SITE_INTERNAL) {
+                    const std::string bel = IdString(extra_data.bel_name).str(ctx);
+                    if (boost::ends_with(bel, "INV") || bel.find("OPTINV") != std::string::npos)
+                        continue;
+                    auto key = BelSiteKey::unpack(extra_data.site_key);
+                    const auto &site = uarch->tile_extra_data(pip.tile)->sites[key.site];
+                    int sv = key.site_variant;
+                    if (key.site >= 0 && key.site < int(uarch->tile_status[pip.tile].site_variant.size())) {
+                        int bound_sv = uarch->tile_status[pip.tile].site_variant.at(key.site);
+                        if (bound_sv >= 0 && bound_sv < int(site.variants.ssize()))
+                            sv = bound_sv;
+                    }
+                    out << stringf("%s.%s_X%d.%s.%s", uarch->tile_name(pip.tile).c_str(),
+                                   IdString(site.variants[sv]).c_str(ctx), key.site, bel.c_str(),
+                                   IdString(extra_data.pip_config).c_str(ctx))
+                        << std::endl;
+                }
+            }
+            blank();
+        }
+    }
+
+    // Whether a cell's port is driven by a net that is not a constant.
+    bool usplus_driven(const CellInfo *ci, IdString port)
+    {
+        const NetInfo *net = ci->getPort(port);
+        if (net == nullptr || net->driver.cell == nullptr)
+            return false;
+        IdString driver = net->driver.cell->type;
+        return driver != id_PSEUDO_VCC && driver != id_PSEUDO_GND && driver != id_VCC && driver != id_GND;
+    }
+
+    // Each register's settings, as Vivado sets its BEL's attributes for the
+    // primitive it is (as its sites.txt records them): its initial value,
+    // whether its reset sets or clears it, whether that is synchronous,
+    // whether it is a latch, and whether its enable and reset are driven --
+    // a constant enable or reset leaves its pin unused.
+    void write_usplus_registers()
+    {
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_SLICE_FFX || ci->bel == BelId())
+                continue;
+            std::string type = str_or_default(ci->attrs, id_X_ORIG_TYPE, "");
+            const bool sets = type == "FDSE" || type == "FDPE" || type == "LDPE";
+            auto init_it = ci->params.find(id_INIT);
+            const bool init_is_defined = init_it != ci->params.end() && init_it->second.is_fully_def();
+            const int init = init_is_defined ? int_or_default(ci->params, id_INIT, sets ? 1 : 0) : (sets ? 1 : 0);
+            const bool synchronous = type == "FDRE" || type == "FDSE";
+            const bool latch = type == "LDCE" || type == "LDPE";
+            write_usplus_setting(ci->bel, "FFINIT", init ? "INIT1" : "INIT0");
+            write_usplus_setting(ci->bel, "FFSR", sets ? "SRHIGH" : "SRLOW");
+            write_usplus_setting(ci->bel, "SYNC_ATTR", synchronous ? "SYNC" : "ASYNC");
+            write_usplus_setting(ci->bel, "FFORLATCH", latch ? "LATCH" : "FF");
+            write_usplus_setting(ci->bel, "CE_ACTIVE", usplus_driven(ci, id_CE) ? "TRUE" : "FALSE");
+            write_usplus_setting(ci->bel, "SR_ACTIVE", usplus_driven(ci, id_SR) ? "TRUE" : "FALSE");
+            write_usplus_setting(ci->bel, "CE_GND", "FALSE");
+            write_usplus_setting(ci->bel, "SR_VCC", "FALSE");
+        }
+    }
+
+    // Each LUT's contents, the 6LUT's and the 5LUT's sharing one INIT.
+    void write_usplus_luts()
+    {
+        dict<BelId, std::pair<CellInfo *, CellInfo *>> by_6lut;
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->type != id_SLICE_LUTX || ci->bel == BelId())
+                continue;
+            const bool is_5lut = boost::ends_with(uarch->bel_name_in_site(ci->bel).str(ctx), "5LUT");
+            Loc loc = ctx->getBelLocation(ci->bel);
+            BelId lut6 = is_5lut ? ctx->getBelByLocation(Loc(loc.x, loc.y, loc.z - BEL_5LUT + BEL_6LUT)) : ci->bel;
+            (is_5lut ? by_6lut[lut6].second : by_6lut[lut6].first) = ci;
+        }
+        // A LUT a net passes through (a route-through, only through a lane
+        // whose 6LUT and 5LUT hold no cell): its output is the input the
+        // net enters by, O6 = A<input>, or the net stops there.
+        dict<BelId, int> passed;
+        for (auto &net : ctx->nets) {
+            for (auto &w : net.second->wires) {
+                PipId pip = w.second.pip;
+                if (pip == PipId() || chip_pip_info(ctx->chip_info, pip).flags != PIP_LUT_ROUTETHRU)
+                    continue;
+                const auto &extra_data =
+                        *reinterpret_cast<const XlnxPipExtraDataPOD *>(chip_pip_info(ctx->chip_info, pip).extra_data.get());
+                int x, y;
+                tile_xy(ctx->chip_info, pip.tile, x, y);
+                int lane = (extra_data.pip_config >> 8) & 0xF;
+                BelId lut6 = ctx->getBelByLocation(Loc(x, y, (lane << 4) | BEL_6LUT));
+                NPNR_ASSERT(lut6 != BelId() && !by_6lut.count(lut6));
+                passed[lut6] = (extra_data.pip_config >> 1) & 0x7;
+            }
+        }
+        for (auto &entry : passed) {
+            out << usplus_element(entry.first) << ".EQN[63:0] = 64'b";
+            for (int i = 63; i >= 0; i--)
+                out << (((i >> entry.second) & 1) ? '1' : '0');
+            out << std::endl;
+        }
+        for (auto &entry : by_6lut) {
+            std::vector<bool> init = get_lut_init(entry.second.first, entry.second.second);
+            out << usplus_element(entry.first) << ".EQN[63:0] = 64'b";
+            for (int i = 63; i >= 0; i--)
+                out << (init.at(i) ? '1' : '0');
+            out << std::endl;
+        }
+    }
+
+    // Each output buffer of an UltraScale+ bank, as Vivado sets an OBUF's
+    // OUTBUF (sites.txt): its port's standard, drive and slew, an output's
+    // IO_TYPE, and IOB_TYPE MASTER on either site of a pair.
+    void write_usplus_outputs()
+    {
+        for (auto &cell : ctx->cells) {
+            CellInfo *pad = cell.second.get();
+            if (pad->type != id_PAD)
+                continue;
+            NetInfo *net = pad->getPort(id_PAD);
+            if (net == nullptr || net->driver.cell == nullptr || net->driver.cell->type != id_IOB_OUTBUF ||
+                net->driver.cell->bel == BelId())
+                continue;
+            BelId bel = net->driver.cell->bel;
+            write_usplus_setting(bel, "DRIVE", std::to_string(int_or_default(pad->attrs, id_DRIVE, 12)));
+            write_usplus_setting(bel, "IOB_TYPE", "MASTER");
+            write_usplus_setting(bel, "IO_TYPE", "OUTPUT");
+            write_usplus_setting(bel, "OSTANDARD", str_or_default(pad->attrs, id_IOSTANDARD, "LVCMOS18"));
+            write_usplus_setting(bel, "SLEW", str_or_default(pad->attrs, id_SLEW, "SLOW"));
+        }
+    }
+
+    // Each global buffer's enable, synchronous unless its CE_TYPE says not,
+    // and the configuration block's STARTUP: each of its pins Vivado sets
+    // ACTIVE where a net that is not a constant drives it, and its user
+    // programming FALSE.
+    void write_usplus_blocks()
+    {
+        static const std::vector<std::pair<std::string, std::string>> startup_pins = {
+                {"GSR", "usr_gsr"}, {"GTS", "usr_gts"}, {"KEYCLEARB", "key_clear"},
+                {"USRCCLKO", "usr_cclk_o"}, {"USRCCLKTS", "usr_cclk_ts"}, {"USRDONEO", "usr_done_o"},
+                {"USRDONETS", "usr_done_ts"}, {"FCSBO", "usr_fcs_b_o"}, {"FCSBTS", "usr_fcs_b_ts"},
+                {"DO0", "usr_d_o_cfgio_0"}, {"DO1", "usr_d_o_cfgio_1"}, {"DO2", "usr_d_o_cfgio_2"},
+                {"DO3", "usr_d_o_cfgio_3"}, {"DTS0", "usr_d_ts_cfgio_0"}, {"DTS1", "usr_d_ts_cfgio_1"},
+                {"DTS2", "usr_d_ts_cfgio_2"}, {"DTS3", "usr_d_ts_cfgio_3"}, {"DI0", "usr_d_pin_cfgio_0"},
+                {"DI1", "usr_d_pin_cfgio_1"}, {"DI2", "usr_d_pin_cfgio_2"}, {"DI3", "usr_d_pin_cfgio_3"},
+        };
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            if (ci->bel == BelId())
+                continue;
+            if (ci->type == id_BUFCE_BUFCE) {
+                write_usplus_setting(ci->bel, "CE_TYPE", str_or_default(ci->params, ctx->id("CE_TYPE"), "SYNC"));
+            } else if (ci->type == ctx->id("STARTUP")) {
+                write_usplus_setting(ci->bel, "PROG_USR", "FALSE");
+                for (auto &pin : startup_pins) {
+                    const NetInfo *net = ci->getPort(ctx->id(pin.first));
+                    bool driven = net != nullptr && net->driver.cell != nullptr && !usplus_constant(net);
+                    write_usplus_setting(ci->bel, pin.second + "_ACTIVE", driven ? "TRUE" : "FALSE");
+                }
+            }
+        }
+    }
+
+    // Whether a net is a constant's.
+    bool usplus_constant(const NetInfo *net)
+    {
+        IdString driver = net->driver.cell->type;
+        return driver == id_PSEUDO_VCC || driver == id_PSEUDO_GND || driver == id_VCC || driver == id_GND;
+    }
+
+    void write_usplus_fasm()
+    {
+        out << "# nextpnr-himbaechel " << GIT_DESCRIBE_STR << "\n";
+        out << "# chipdb " << ctx->chip_info->name.get() << " version " << ctx->chip_info->version << " generator "
+            << ctx->chip_info->generator.get() << "\n";
+        write_usplus_luts();
+        write_usplus_registers();
+        write_usplus_outputs();
+        write_usplus_blocks();
+        write_usplus_routing();
+    }
+
     void write_fasm()
     {
         // Run-identity header: these comment lines are dropped by fasm2frames,
@@ -5604,7 +5878,11 @@ struct FasmBackend
 void XilinxImpl::write_fasm(std::ostream &out)
 {
     FasmBackend be(this->ctx, this, out);
-    be.write_fasm();
+    // An UltraScale+ die (xcku3p) is written in its own terms.
+    if (boost::starts_with(chipdb_die, "xcku"))
+        be.write_usplus_fasm();
+    else
+        be.write_fasm();
 }
 
 void XilinxImpl::write_fasm(const std::string &filename)

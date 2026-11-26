@@ -183,6 +183,11 @@ struct XilinxImpl : HimbaechelAPI
     // Cached: is_pip_unavail is on the router's hot path.
     mutable bool design_has_bufr = false;
     mutable bool design_has_bufr_valid = false;
+    // Cached per-BUFCE reachability to a coded fabric clock leaf via dedicated
+    // clock routing (avoids placing unconstrained BUFG/BUFGCE on channels whose
+    // downstream HDISTR->leaf mux pips are uncoded in the bitstream database).
+    mutable dict<BelId, bool> bufce_reaches_leaf;
+    bool bufce_can_reach_leaf(BelId bel) const;
     bool checkPipAvail(PipId pip) const override { return !is_pip_unavail(pip); }
     bool checkPipAvailForNet(PipId pip, const NetInfo *net) const override { return !is_pip_unavail(pip); }
 

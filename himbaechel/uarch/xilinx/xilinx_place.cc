@@ -30,6 +30,7 @@
 
 #define HIMBAECHEL_CONSTIDS "uarch/xilinx/constids.inc"
 #include "himbaechel_constids.h"
+#include <queue>
 
 NEXTPNR_NAMESPACE_BEGIN
 
@@ -727,8 +728,60 @@ bool XilinxImpl::isBelLocationValid(BelId bel, bool explain_invalid) const
                     return false;
                 }
         }
+    } else if (ctx->getBelType(bel) == id_BUFCE_BUFCE) {
+        CellInfo *ci = ctx->getBoundBelCell(bel);
+        if (ci != nullptr && !ci->attrs.count(id_LOC) && !ci->attrs.count(id_BEL)) {
+            // BUFGCE_HDIO only drives its own HDIO clock region (no VDISTR spine);
+            // keep unconstrained BUFG/BUFGCE cells on full-chip CMT_L BUFGCE sites
+            // whose clock track reaches a coded fabric leaf clock.
+            if (bel_tile_type(bel).str(ctx) == "RCLK_HDIO")
+                return false;
+            if (!bufce_can_reach_leaf(bel))
+                return false;
+        }
     }
     return true;
+}
+
+bool XilinxImpl::bufce_can_reach_leaf(BelId bel) const
+{
+    auto it = bufce_reaches_leaf.find(bel);
+    if (it != bufce_reaches_leaf.end())
+        return it->second;
+    WireId start = ctx->getBelPinWire(bel, id_O);
+    bool found = false;
+    if (start != WireId()) {
+        std::queue<WireId> q;
+        pool<WireId> visited;
+        q.push(start);
+        visited.insert(start);
+        while (!q.empty() && visited.size() < 4000) {
+            WireId curr = q.front();
+            q.pop();
+            const std::string wn = ctx->getWireName(curr).str(ctx);
+            if (wn.find("CLK_LEAF_SITES_") != std::string::npos && wn.find("_CLK_IN") != std::string::npos) {
+                found = true;
+                break;
+            }
+            for (auto pip : ctx->getPipsDownhill(curr)) {
+                if (is_pip_unavail(pip))
+                    continue;
+                WireId dst = ctx->getPipDstWire(pip);
+                if (visited.count(dst))
+                    continue;
+                IdString intent = ctx->getWireType(dst);
+                if (intent.in(id_NODE_DOUBLE, id_NODE_HLONG, id_NODE_HQUAD, id_NODE_VLONG, id_NODE_VQUAD,
+                              id_NODE_SINGLE, id_NODE_CLE_OUTPUT, id_NODE_OPTDELAY, id_BENTQUAD, id_DOUBLE,
+                              id_HLONG, id_HQUAD, id_OPTDELAY, id_SINGLE, id_VLONG, id_VLONG12, id_VQUAD,
+                              id_PINBOUNCE))
+                    continue;
+                visited.insert(dst);
+                q.push(dst);
+            }
+        }
+    }
+    bufce_reaches_leaf[bel] = found;
+    return found;
 }
 
 // The bel a RAMB36E1 cascade continues on from `bel`: the chipdb wires its
