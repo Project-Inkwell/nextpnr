@@ -1167,8 +1167,8 @@ void XC7Packer::fold_inverter(CellInfo *cell, std::string port)
         return;
     // The folded inverter toggles the pin's inversion, so that one already
     // requested with IS_<port>_INVERTED cancels it.
-    IdString inverted = ctx->idf("IS_%s_INVERTED", port.c_str());
     if (drv->type == id_LUT1 && int_or_default(drv->params, id_INIT, 0) == 1) {
+        IdString inverted = ctx->idf("IS_%s_INVERTED", port.c_str());
         cell->disconnectPort(p);
         NetInfo *preinv = drv->getPort(id_I0);
         cell->connectPort(p, preinv);
@@ -1176,6 +1176,7 @@ void XC7Packer::fold_inverter(CellInfo *cell, std::string port)
         if (net->users.empty())
             packed_cells.insert(drv->name);
     } else if (drv->type == id_INV) {
+        IdString inverted = ctx->idf("IS_%s_INVERTED", port.c_str());
         cell->disconnectPort(p);
         NetInfo *preinv = drv->getPort(id_I);
         cell->connectPort(p, preinv);
@@ -1466,9 +1467,11 @@ void XC7Packer::pack_iologic()
             };
             const bool is_slave = str_or_default(ci->params, id_SERDES_MODE, "MASTER") == "SLAVE";
             for (IdString port : {id_SHIFTIN1, id_SHIFTIN2}) {
-                if (!is_constant(ci->getPort(port)))
+                const bool shiftin_is_not_constant = !is_constant(ci->getPort(port));
+                if (shiftin_is_not_constant)
                     continue;
-                if (is_slave)
+                const bool shiftin_requires_master = is_slave;
+                if (shiftin_requires_master)
                     log_error("%s '%s' is a SLAVE with %s tied to a constant; it must come from the master's "
                               "SHIFTOUT%c\n",
                               ci->type.c_str(ctx), ctx->nameOf(ci), port.c_str(ctx), port.str(ctx).back());
@@ -1476,9 +1479,11 @@ void XC7Packer::pack_iologic()
             }
             const std::string interface_type = str_or_default(ci->params, id_INTERFACE_TYPE, "NETWORKING");
             for (IdString port : {id_OCLK, id_OCLKB}) {
-                if (!is_constant(ci->getPort(port)))
+                const bool oclk_is_not_constant = !is_constant(ci->getPort(port));
+                if (oclk_is_not_constant)
                     continue;
-                if (interface_type != "NETWORKING")
+                const bool interface_uses_oclk = interface_type != "NETWORKING";
+                if (interface_uses_oclk)
                     log_error("%s '%s' has %s tied to a constant, but INTERFACE_TYPE %s needs a clock on it\n",
                               ci->type.c_str(ctx), ctx->nameOf(ci), port.c_str(ctx), interface_type.c_str());
                 ci->disconnectPort(port);
@@ -1486,7 +1491,8 @@ void XC7Packer::pack_iologic()
                 // new IdString and shift every id created after it.
                 const std::string inverted = "IS_" + port.str(ctx) + "_INVERTED";
                 for (auto it = ci->params.begin(); it != ci->params.end(); ++it) {
-                    if (it->first.str(ctx) == inverted) {
+                    const bool is_inverted_parameter = it->first.str(ctx) == inverted;
+                    if (is_inverted_parameter) {
                         ci->params.erase(it);
                         break;
                     }

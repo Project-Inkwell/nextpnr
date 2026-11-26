@@ -38,7 +38,7 @@ env:
   # carrying the cases.  Fixed revisions, because the chipdb decides what the
   # cases do.
   PRJXRAY_DB_REV: a8b09269beb6e3d3c07e2a0901f845420df1c802
-  DEMO_PROJECTS_REV: b1fc4506cff0e8d87c8cfd800cb382ec5b579c25
+  DEMO_PROJECTS_REV: 9d3d2de73a7fc69d9b87a5557b720982994e06ee
 
 jobs:
   regression:
@@ -147,9 +147,11 @@ jobs:
           # iob-primitive-unpacked). Then pad-user-io: the PAD row counts user
           # I/O only, and part-utilisation expects that count. Then
           # iserdes-bitslip-open: an ISERDESE2 whose BITSLIP the design leaves
-          # open has it tied to GND, as Vivado does. The last name is
-          # clock-row-crossed: a global clock line is active in every clock
-          # row it crosses on its way from the BUFG, as Vivado sets it.
+          # open has it tied to GND, as Vivado does. Then clock-row-crossed: a
+          # global clock line is active in every clock row it crosses on its
+          # way from the BUFG, as Vivado sets it. The last name is
+          # iserdes-oclk-tie0: an ISERDESE2 in NETWORKING mode whose OCLK is
+          # tied to 0 leaves it unconnected instead of inverting it onto VCC.
           demo-projects/regression/run.sh \
             clock-srcc-bufg bram-sdp-unused-port bufg-fabric-driven \
             config-primitive-startupe2 iddr-four-iff-flops \
@@ -175,7 +177,8 @@ jobs:
             ibufds-diff-out iob-primitive-unpacked \
             pad-user-io \
             iserdes-bitslip-open \
-            clock-row-crossed
+            clock-row-crossed \
+            iserdes-oclk-tie0
 
       # Failing today, on purpose and by name.  These three cases are a gap of
       # this engine alone, with no counterpart in the fork; PR #56 is still open.
