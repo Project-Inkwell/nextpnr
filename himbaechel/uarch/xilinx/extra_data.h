@@ -47,6 +47,10 @@ NPNR_PACKED_STRUCT(struct XlnxPipExtraDataPOD {
 // through such a pip yields a bitstream that SILENTLY lacks the connection.
 static const uint32_t PIP_CFG_ROUTETHRU = 0x1;
 static const uint32_t PIP_CFG_NO_BITS = 0x80000000;
+// PIP_CFG_TRISTATE marks a pip whose driver the database can leave
+// undriving (a `<TILE>.<dst>.<src>.TRISTATED` feature): the FASM writer
+// names it where a net takes the pip's destination from another tile.
+static const uint32_t PIP_CFG_TRISTATE = 0x40000000;
 
 enum class PipClass
 {

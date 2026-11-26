@@ -2,7 +2,7 @@ import json
 import os
 import re
 from enum import Enum
-from tileconn import apply_tileconn
+from tileconn import apply_nodes, apply_tileconn
 from parse_sdf import parse_sdf_file
 from dataclasses import dataclass
 from typing import Optional
@@ -86,6 +86,7 @@ class TileData:
         self.wires_by_name = {}
         self.pips = []
         self.sitepin_data = {} # (type, relxy, pin) -> TileSitePinData
+        self.site_order = [] # (prefix, relxy) of each site, as the tile type lists them
         self.cell_timing = None
 
 class PIP:
@@ -352,6 +353,11 @@ class Device:
     def site(self, name):
         return self.sites_by_name[name]
 
+# Whether a tile's sites are numbered as its tile type lists them, not by
+# their names (set by the generator for a family whose database lists them
+# in the tool's own order).
+sites_in_tile_type_order = False
+
 def import_device(fabricname, prjxray_root, metadata_root):
     site_type_cache = {}
     tile_type_cache = {}
@@ -451,6 +457,7 @@ def import_device(fabricname, prjxray_root, metadata_root):
                 td.pips.append(pd)
             for sitedata in tj["sites"]:
                 rel_xy = parse_xy(sitedata["name"])
+                td.site_order.append((sitedata.get("prefix"), rel_xy))
                 sitetype = sitedata["type"]
                 for sitepin, pindata in sorted(sitedata["site_pins"].items()):
                     if pindata is None:
@@ -511,6 +518,26 @@ def import_device(fabricname, prjxray_root, metadata_root):
             x, y = parse_xy(name)
             return (name[:name.rfind("_X")], x, y)
 
+        # A database whose tile types list their sites in the tool's own order
+        # (Kraken's, for an UltraScale+ part: the order a setting names its
+        # site by): each site by its place in that list, by its prefix and
+        # its coordinates relative to the tile's least of that prefix --
+        # the same in every instance, as the coordinates' order is.
+        if sites_in_tile_type_order:
+            least = {}
+            for site in tiledata["sites"]:
+                prefix = site[:site.rfind("_X")]
+                sx, sy = parse_xy(site)
+                lx, ly = least.get(prefix, (sx, sy))
+                least[prefix] = (min(lx, sx), min(ly, sy))
+            order = {key: at for at, key in enumerate(t.data.site_order)}
+            def site_sort_key(item, sort_key=site_sort_key):
+                name = item[0]
+                prefix = name[:name.rfind("_X")]
+                x, y = parse_xy(name)
+                key = (prefix, (x - least[prefix][0], y - least[prefix][1]))
+                return (0, order[key], ()) if key in order else (1, 0, sort_key(item))
+
         for idx, (site, sitetype) in enumerate(sorted(tiledata["sites"].items(), key=site_sort_key)):
                 si = Site(t, site, idx, parse_xy(site), get_site_type_data(sitetype))
                 t.site_insts.append(si)
@@ -536,7 +563,9 @@ def import_device(fabricname, prjxray_root, metadata_root):
     for entry in os.scandir(prjxray_root):
         if not entry.is_dir() or not entry.name.startswith(fabricname):
             continue
-        device_postfix = entry.name[len(fabricname):]
+        # xc7a100tcsg324-1, or xcku3p-ffvb676-2-e: the package after the die,
+        # a dash between them in an UltraScale+ part's name.
+        device_postfix = entry.name[len(fabricname):].lstrip("-")
         if len(device_postfix) == 0:
             continue
         package_name = device_postfix.split("-")[0]
@@ -552,8 +581,15 @@ def import_device(fabricname, prjxray_root, metadata_root):
                     continue # header
                 pkg.pin_map[sl[0]] = sl[2]
             d.packages[package_name] = pkg
-    with open(prjxray_root + "/" + fabricname + "/tileconn.json", "r") as tcf:
-        apply_tileconn(tcf, d)
+    # The nodes: listed whole where the database lists them (nodes.txt, a
+    # node a line), else joined by tile type and offset (tileconn.json).
+    nodes_path = prjxray_root + "/" + fabricname + "/nodes.txt"
+    if os.path.exists(nodes_path):
+        with open(nodes_path, "r") as nf:
+            apply_nodes(nf, d)
+    else:
+        with open(prjxray_root + "/" + fabricname + "/tileconn.json", "r") as tcf:
+            apply_tileconn(tcf, d)
     return d
 
 if __name__ == '__main__':

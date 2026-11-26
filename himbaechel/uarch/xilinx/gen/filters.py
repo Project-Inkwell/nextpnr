@@ -1,10 +1,42 @@
 # Mapping rules from prjxray to nextpnr
 
+# The eight-LUT slice of an UltraScale+ part (its CLE tiles hold one each):
+# z[6:4] the letter (A-H), z[3:0] the kind -- 6LUT, 5LUT, FF, FF2, the FF's
+# two input muxes, OUTMUX -- and the slice's own bels at fixed z, as
+# nextpnr-xilinx's bbaexport.java numbers them (getBelZoverride).
+XCUP_SLICE_BELS = {
+    "F7MUX_AB": 0x07, "F7MUX_CD": 0x27, "F7MUX_EF": 0x47, "F7MUX_GH": 0x67,
+    "F8MUX_BOT": 0x08, "F8MUX_TOP": 0x48, "F9MUX": 0x09, "CARRY8": 0x0A,
+    "CLK1INV": 0x0B, "CLK2INV": 0x4B, "LCLKINV": 0x1B,
+    "RST_ABCDINV": 0x0C, "RST_EFGHINV": 0x4C, "HARD0GND": 0x0D,
+}
+# An UltraScale+ block RAM tile's bels, by type.
+XCUP_BRAM_BELS = {
+    "RAMBFIFO36E2_RAMBFIFO36E2": 0, "RAMB36E2_RAMB36E2": 1, "FIFO36E2_FIFO36E2": 2,
+    "RAMB18E2_U_RAMB18E2": 5, "RAMBFIFO18E2_RAMBFIFO18E2": 8, "RAMB18E2_L_RAMB18E2": 9,
+    "FIFO18E2_FIFO18E2": 10,
+}
+
+def get_xcup_slice_z(bn):
+    subslices = "ABCDEFGH"
+    for i, pf in enumerate(["6LUT", "5LUT", "FF", "FF2"]):
+        if len(bn) == len(pf) + 1 and bn[1:] == pf and bn[0] in subslices:
+            return (subslices.index(bn[0]) << 4) | i
+    if bn.startswith("FFMUX") and len(bn) == 7:
+        return (subslices.index(bn[5]) << 4) | (5 if bn[6] == "2" else 4)
+    if bn.startswith("OUTMUX") and len(bn) == 7:
+        return (subslices.index(bn[6]) << 4) | 6
+    return XCUP_SLICE_BELS.get(bn, -1)
+
 def get_bel_z_override(bel, default_z):
     s = bel.site
     t = s.tile
     bt = bel.bel_type()
     bn = bel.name()
+    if t.tile_type().startswith("CLE") and s.site_type() in ("SLICEL", "SLICEM"):
+        return get_xcup_slice_z(bn)
+    if t.tile_type() == "BRAM" and bt in XCUP_BRAM_BELS:
+        return XCUP_BRAM_BELS[bt]
     if t.tile_type() == "BRAM_L" or t.tile_type() == "BRAM_R":
         is_top18 = (s.primary.site_type() == "RAMB18E1")
         if bt == "RAMBFIFO36E1_RAMBFIFO36E1":
@@ -48,6 +80,13 @@ def get_bel_type_override(bt):
     elif bt == "FF_INIT" or bt == "REG_INIT":
         return "SLICE_FFX"
 
+    # An UltraScale+ IO bank's buffers (HDIOB_OUTBUF_M, HPIOB_PAD_S, ...):
+    # one type each whichever the bank and side, the pad as a 7-series pad.
+    if bt.startswith(("HDIOB_", "HPIOB_")):
+        for part in ("PAD", "PULL", "IBUFCTRL", "INBUF", "OUTBUF"):
+            if f"_{part}_" in bt + "_":
+                return "PAD" if part == "PAD" else f"IOB_{part}"
+
     iolParts = ["COMBUF_", "IDDR_", "IPFF_", "OPFF_", "OPTFF_", "TFF_"]
     for p in iolParts:
         if bt.startswith(p):
@@ -69,8 +108,17 @@ def get_bel_type_override(bt):
     else:
         return bt
 
+def get_bel_pin_name_override(bel_type, pin):
+    # A slice flip-flop's clock is CK, as a 7-series part names it; an
+    # UltraScale+ part names it CLK.
+    if get_bel_type_override(bel_type) == "SLICE_FFX" and pin == "CLK":
+        return "CK"
+    return pin
+
 def include_pip(tile_type, p):
-    is_xc7_logic = (tile_type in ("CLBLL_L", "CLBLL_R", "CLBLM_L", "CLBLM_R"))
+    # A logic tile's LUT route-throughs are the generator's own pips
+    # (LUT_ROUTETHRU): a 7-series CLB's, and an UltraScale+ CLE's.
+    is_xc7_logic = (tile_type in ("CLBLL_L", "CLBLL_R", "CLBLM_L", "CLBLM_R")) or tile_type.startswith("CLE")
     if p.is_route_thru() and p.src_wire().name().endswith("_CE_INT"):
         return False
     if p.is_route_thru() and is_xc7_logic:

@@ -1,11 +1,31 @@
 import json
 
+def merge_nodes(a, b):
+    if a is b:
+        return
+    for bwire in b.wires:
+        bwire.tile.wire_to_node[bwire.index] = a
+        a.wires.append(bwire)
+    b.wires = []
+
+def apply_nodes(f, d):
+    # A node list: a line per node, its wires as "<tile>/<wire>". The nodes
+    # exactly, where tileconn.json reduces them to joins by tile type and
+    # offset.
+    for line in f:
+        wires = line.split()
+        if len(wires) < 2:
+            continue
+        first = None
+        for tile_wire in wires:
+            tile, wire = tile_wire.split("/", 1)
+            node = d.tile(tile).wire(wire).node()
+            if first is None:
+                first = node
+            else:
+                merge_nodes(first, node)
+
 def apply_tileconn(f, d):
-    def merge_nodes(a, b):
-        for bwire in b.wires:
-            bwire.tile.wire_to_node[bwire.index] = a
-            a.wires.append(bwire)
-        b.wires = []
 
     tj = json.load(f)
     # Restructure to tiletype -> coord offset -> type -> wire_pairs

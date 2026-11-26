@@ -118,10 +118,16 @@ seen_node_timings = set()
 # them.  See PIP_CFG_NO_BITS in extra_data.h.
 PIP_CFG_ROUTETHRU = 0x1
 PIP_CFG_NO_BITS = 0x80000000
+# A pip whose driver the database can leave undriving (`.TRISTATED`).
+PIP_CFG_TRISTATE = 0x40000000
 
 xraydb_root_for_bits = None
 _bits_cache = {}
 bits_stats = {"known": 0, "nobits": 0, "notiledb": 0}
+# A database every pip of whose coded tile types it lists, bits or none
+# (Kraken's, for an UltraScale+ part): a tile type with no bit database is
+# one it has no codes for, and its pips cannot be programmed.
+every_coded_pip_listed = False
 nobits_by_tiletype = {}
 
 def dealias_tile_type(tile_type):
@@ -187,13 +193,18 @@ def tile_type_features(tile_type):
     _bits_cache[tile_type] = result
     return result
 
+def pip_can_tristate(tile_type, dst_wire, src_wire):
+    feats = tile_type_features(tile_type)
+    return feats is not None and f"{tile_type}.{dst_wire}.{src_wire}.TRISTATED" in feats
+
 def pip_has_bits(tile_type, dst_wire, src_wire):
     feats = tile_type_features(tile_type)
     if feats is None:
         # No database for this tile type at all -- we cannot tell, so do not
-        # accuse the pip.  Counted separately and reported.
+        # accuse the pip (unless the database lists every pip it codes).
+        # Counted separately and reported.
         bits_stats["notiledb"] += 1
-        return True
+        return not every_coded_pip_listed
     keys = [f"{tile_type}.{dst_wire}.{src_wire}"]
     tile_is_aliased = dealias_tile_type(tile_type) != tile_type
     if tile_is_aliased:
@@ -217,7 +228,8 @@ def pip_has_bits(tile_type, dst_wire, src_wire):
 def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
     tile_type = tile.tile_type()
     if tile.x == 0 and tile.y == 0:
-        assert tile_type == "NULL"
+        # The corner holds nothing (see main): the pseudo gnd/vcc bels' place.
+        assert not tile.data.wires and not tile.sites(), f"the corner tile, a {tile_type}, holds wires or sites"
         tile_type = "NULL_CORNER"
     tt = ch.create_tile_type(tile_type)
     # import tile wires
@@ -302,7 +314,10 @@ def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
                     if s.rel_xy()[0] == 1:
                         rt_config |= (4 << 8)
                     rt_config |= ((i - 1) << 1)
-                    add_pip(pin.tile_wire().name(), s.pin(f"{swn[0]}").tile_wire().name(),
+                    # The LUT's output site pin: `A` in a 7-series slice,
+                    # `A_O` in an UltraScale+ one (a CLE tile's).
+                    lut_out = f"{swn[0]}_O" if s.tile.tile_type().startswith("CLE") else swn[0]
+                    add_pip(pin.tile_wire().name(), s.pin(lut_out).tile_wire().name(),
                             pip_class=PipClass.LUT_ROUTETHRU,
                             pip_config=rt_config,
                             site_key=(s.index << 8),
@@ -370,7 +385,8 @@ def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
                     nb.flags |= BEL_FLAG_GLOBAL
                 # TODO: extra data (site etc)
                 for pin in bel.pins():
-                    tt.add_bel_pin(nb, pin.name, lookup_site_wire(pin.site_wire()), lookup_port_type(pin.dir()))
+                    tt.add_bel_pin(nb, filters.get_bel_pin_name_override(bel.bel_type(), pin.name),
+                                   lookup_site_wire(pin.site_wire()), lookup_port_type(pin.dir()))
             # Import site pins
             for pin in sv.pins():
                 pin_key = (pin.name(), pin.site_wire().name())
@@ -407,11 +423,28 @@ def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
                     pip_config=ch.strs.id(bel_pin).index,
                     timing=site_timing.internal(site_pip.src_wire().name(), site_pip.dst_wire().name()) if site_timing else "SITE_NULL"
                 )
+    # The site each tile wire is a pin of: a pip passing through a site (a
+    # route-through) carries it, as a site pip does, for the FASM writer to
+    # name what the tool sets in the site a net passes.
+    site_of_wire = {}
+    # A clock buffer's enable pins, by their tile wire: a route-through from
+    # one is no path -- the buffer's output is its clock gated by the enable,
+    # never the enable -- and a net taking it would carry a gated clock.
+    clock_enable_wires = set()
+    for site in tile.sites():
+        for pin in site.pins():
+            wire = pin.tile_wire()
+            if wire is not None:
+                site_of_wire.setdefault(wire.name(), site.index)
+                if site.site_type().startswith(("BUFCE", "BUFGCE")) and pin.name().startswith("CE"):
+                    clock_enable_wires.add(wire.name())
     # Import tile pips
     for pip in tile.pips():
         if not filters.include_pip(tile.tile_type(), pip):
             continue
         src, dst = pip.src_wire().name(), pip.dst_wire().name()
+        if pip.is_route_thru() and (src in clock_enable_wires or (pip.is_bidi() and dst in clock_enable_wires)):
+            continue
         if timing_file:
             # A pip the directory has no delay for keeps X-Ray's own
             xray = [int(pip.min_delay()*1000), int(pip.max_delay()*1000)] * 2
@@ -431,13 +464,17 @@ def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
         # bel), so the segbits/ppips test does not apply to them.
         fwd_nb = 0 if rt else (
             0 if pip_has_bits(tile_type, dst, src) else PIP_CFG_NO_BITS)
+        passed = site_of_wire.get(src, -1) if rt and site_of_wire.get(src, -1) == site_of_wire.get(dst, -2) else -1
+        site_key = (passed << 8) if passed >= 0 else -1
+        fwd_z = PIP_CFG_TRISTATE if pip_can_tristate(tile_type, dst, src) else 0
         add_pip(src, dst, pip_class=PipClass.TILE_ROUTING, timing=forward,
-            pip_config=rt | fwd_nb)
+            site_key=site_key, pip_config=rt | fwd_nb | fwd_z)
         if pip.is_bidi():
             rev_nb = 0 if rt else (
                 0 if pip_has_bits(tile_type, src, dst) else PIP_CFG_NO_BITS)
+            rev_z = PIP_CFG_TRISTATE if pip_can_tristate(tile_type, src, dst) else 0
             add_pip(dst, src, pip_class=PipClass.TILE_ROUTING, timing=backward,
-                pip_config=rt | rev_nb)
+                site_key=site_key, pip_config=rt | rev_nb | rev_z)
 
 def import_sdf_timings(variant, sdfcell):
     # TODO: anything other than comb
@@ -606,10 +643,17 @@ def main():
         metadata_root = metadata_root.replace("artix7", "virtex7")
         xraydb_root = xraydb_root.replace("artix7", "virtex7")
     is_virtex7 = "xc7v" in args.device
+    # Kintex UltraScale+ (xcku3p, ...): no X-Ray database holds it, so its
+    # files are another tool's laid out as X-Ray's (Kraken's), and no SDF of
+    # X-Ray's times its cells.
+    is_kintexuplus = args.device.startswith("xcku") and args.device.endswith("p")
+    global every_coded_pip_listed
+    every_coded_pip_listed = is_kintexuplus
     # segbits_*.db / ppips_*.db live alongside the tile_type_*.json we import
     global xraydb_root_for_bits
     xraydb_root_for_bits = xraydb_root
     # Load prjxray device data
+    xilinx_device.sites_in_tile_type_order = is_kintexuplus
     d = xilinx_device.import_device(args.device, xraydb_root, metadata_root)
     # Init constant ids
     ch = Chip("xilinx", args.device, d.width, d.height)
@@ -623,8 +667,10 @@ def main():
     for tile in d.tiles:
         tile_type = tile.tile_type()
         if tile.x == 0 and tile.y == 0:
-            assert tile_type == "NULL"
-            # location for pseudo gnd/vcc bels
+            # The corner holds nothing (a 7-series part's NULL tile, an
+            # UltraScale+ one's IO termination): the place for the pseudo
+            # gnd/vcc bels.
+            assert not tile.data.wires and not tile.sites(), f"the corner tile, a {tile_type}, holds wires or sites"
             tile_type = "NULL_CORNER"
         if tile_type not in ch.tile_type_idx:
             import_tiletype(ch, tile)
@@ -684,7 +730,10 @@ def main():
     timings_root = xraydb_root
     if "kintex7" in xraydb_root: # TODO: missing
         timings_root = xraydb_root.replace("kintex7", "artix7")
-    if timing_file:
+    if timing_file and is_kintexuplus:
+        # No X-Ray SDF to fall back on: what the directory times is all.
+        timing_file.cell_variants(fallback={})
+    elif timing_file:
         # An arc or check the directory lacks is X-Ray's: the carry chain's
         # (CARRY4 in the SLICEM's SDF, and CARRY4_AX, which has DI, in the CLB
         # tile's), the F7/F8 muxes', and the LUT-RAM's and shift register's (DI2
@@ -729,35 +778,38 @@ def main():
         ff.add_setup_hold("CK", "D", ClockEdge.RISING, ff_d_setup, ff_d_hold)
         ff.add_clock_out("CK", "Q", ClockEdge.RISING, ff_clk_q)
 
-        # Load SDF for carry and mux
-        slicem_sdf = parse_sdf.parse_sdf_file(path.join(timings_root, "timings", "slicem.sdf"))
-        mux = ch.timing.add_cell_variant("DEFAULT", "SELMUX2_1")
-        import_sdf_timings(mux, slicem_sdf.cells[("SELMUX2_1", "SLICEM/F7BMUX")])
-        carry = ch.timing.add_cell_variant("DEFAULT", "CARRY4")
-        import_sdf_timings(carry, slicem_sdf.cells[("CARRY4", "SLICEM")])
-        # A LUT-RAM or SRL output also changes on the clock, after a write or a
-        # shift. Those cells take one of these variants (assign_cell_tags in
-        # xilinx.cc): the LUT arcs above plus clock-to-out, the slowest of the four
-        # LUTs in the SDF. They are named after the attribute the packer gives
-        # those cells, which is no cell type, so nothing else picks them up.
-        def sdf_clock_out(celltype, port):
-            arcs = [e for (ct, inst), cell in slicem_sdf.cells.items() if ct == celltype for e in cell.entries
-                    if isinstance(e, parse_sdf.IOPath) and e.from_pin == "CLK" and e.to_pin == port]
-            if not arcs:
-                return None
-            return TimingValue(int(min(min(e.rising.minv, e.falling.minv) for e in arcs)*1000),
-                int(max(max(e.rising.maxv, e.falling.maxv) for e in arcs)*1000))
-        for variant, outputs in (("X_LUT_AS_DRAM", (("O6", "LUT_OR_MEM6LRAM"), ("O5", "LUT_OR_MEM5LRAM"))),
-                                 ("X_LUT_AS_SRL", (("O6", "LUT_OR_MEM6SHFREG"), ("MC31", "LUT_OR_MEM6SHFREG")))):
-            clock_outs = [(port, sdf_clock_out(celltype, port)) for port, celltype in outputs]
-            if any(delay is None for port, delay in clock_outs):
-                continue
-            mem = ch.timing.add_cell_variant("DEFAULT", variant)
-            add_lut_timing(mem)
-            for port, delay in clock_outs:
-                mem.add_clock_out("CLK", port, ClockEdge.RISING, delay)
+        # The carry chain, muxes, LUT-RAM and block RAM as X-Ray's SDFs time
+        # them: a family X-Ray does not hold has none, and they stay untimed.
+        if not is_kintexuplus:
+            # Load SDF for carry and mux
+            slicem_sdf = parse_sdf.parse_sdf_file(path.join(timings_root, "timings", "slicem.sdf"))
+            mux = ch.timing.add_cell_variant("DEFAULT", "SELMUX2_1")
+            import_sdf_timings(mux, slicem_sdf.cells[("SELMUX2_1", "SLICEM/F7BMUX")])
+            carry = ch.timing.add_cell_variant("DEFAULT", "CARRY4")
+            import_sdf_timings(carry, slicem_sdf.cells[("CARRY4", "SLICEM")])
+            # A LUT-RAM or SRL output also changes on the clock, after a write or a
+            # shift. Those cells take one of these variants (assign_cell_tags in
+            # xilinx.cc): the LUT arcs above plus clock-to-out, the slowest of the four
+            # LUTs in the SDF. They are named after the attribute the packer gives
+            # those cells, which is no cell type, so nothing else picks them up.
+            def sdf_clock_out(celltype, port):
+                arcs = [e for (ct, inst), cell in slicem_sdf.cells.items() if ct == celltype for e in cell.entries
+                        if isinstance(e, parse_sdf.IOPath) and e.from_pin == "CLK" and e.to_pin == port]
+                if not arcs:
+                    return None
+                return TimingValue(int(min(min(e.rising.minv, e.falling.minv) for e in arcs)*1000),
+                    int(max(max(e.rising.maxv, e.falling.maxv) for e in arcs)*1000))
+            for variant, outputs in (("X_LUT_AS_DRAM", (("O6", "LUT_OR_MEM6LRAM"), ("O5", "LUT_OR_MEM5LRAM"))),
+                                     ("X_LUT_AS_SRL", (("O6", "LUT_OR_MEM6SHFREG"), ("MC31", "LUT_OR_MEM6SHFREG")))):
+                clock_outs = [(port, sdf_clock_out(celltype, port)) for port, celltype in outputs]
+                if any(delay is None for port, delay in clock_outs):
+                    continue
+                mem = ch.timing.add_cell_variant("DEFAULT", variant)
+                add_lut_timing(mem)
+                for port, delay in clock_outs:
+                    mem.add_clock_out("CLK", port, ClockEdge.RISING, delay)
 
-        import_bram_timings(ch.timing, parse_sdf.parse_sdf_file(path.join(timings_root, "timings", "BRAM_L.sdf")), args.device)
+            import_bram_timings(ch.timing, parse_sdf.parse_sdf_file(path.join(timings_root, "timings", "BRAM_L.sdf")), args.device)
 
     # Import package pins
     for package_name, package in sorted(d.packages.items(), key=lambda x:x[0]):
