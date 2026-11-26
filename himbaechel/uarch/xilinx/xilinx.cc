@@ -139,10 +139,12 @@ void XilinxImpl::init_database(Arch *arch)
     //
     // A Kintex UltraScale+ part (xcku3p-ffvb676-2-e) puts a dash before its
     // package, and a temperature grade (e, i) after its speed grade, which
-    // has a low-power variant (1L, 2L).
+    // has low-power variants (1L, 2L, 1LV, 2LV). Its grade is the two
+    // together (2-e): the parts of one speed in two temperature ranges are
+    // timed apart.
     std::regex devicere = std::regex(
             "(xc7z007s|xc7z012s|xc7z014s|xc7[azks]\\d+t?|xc7vx\\d+t?|xcku\\d+p)"
-            "-?([a-z0-9]*)(?:-(1IL|1Q|1L|2L|[123]))?(?:-[ei])?");
+            "-?([a-z0-9]*)(?:-((?:1IL|1Q|1LV|2LV|1L|2L|[123])(?:-[ei])?))?");
     if (!std::regex_match(args.device, match, devicere)) {
         log_error("Invalid device %s\n", args.device.c_str());
     }
