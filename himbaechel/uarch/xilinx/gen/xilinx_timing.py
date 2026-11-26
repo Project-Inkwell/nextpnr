@@ -45,6 +45,10 @@ CELLS = {
 }
 # Block RAM, a variant per write and read mode (true or simple dual port)
 # and per port's WRITE_MODE; the directory times the write modes alike.
+# A cell port the bel names otherwise: UltraScale+ calls a flip-flop's clock
+# CLK, which the packer's flip-flop calls CK (as 7-series' bels do).
+RENAMED = {"SLICE_FFX": {"CLK": "CK"}}
+
 BRAMS = {"RAMB18E1_RAMB18E1": ("RAMB18E1", "RAMB18E1/RAMB18E1"), "RAMB36E1_RAMB36E1": ("RAMB36E1", "RAMB36E1/RAMB36E1")}
 WRITE_MODES = ("NC", "RF", "WF")
 
@@ -177,10 +181,12 @@ class TimingDir:
             for t, n in sorted(by_type.items(), key=lambda kv: -kv[1])[:5]:
                 print(f"    {t:<28} {n:6}", file=file)
 
-    def arcs(self, cell, entries, clocks=lambda pin, clock: clock, clocked=True):
+    def arcs(self, cell, entries, clocks=lambda pin, clock: clock, clocked=True, renamed={}):
         """Add these SDF entries' arcs on the rising edge to `cell`, each
         once -- clock-to-out arcs only if `clocked`; `clocks` names the clock
-        a pin's check or output is by."""
+        a pin's check or output is by; `renamed` gives the cell's name of a
+        bel pin it names otherwise."""
+        entries = [rename(e, renamed) for e in entries] if renamed else entries
         seen = set()
         # A pin the checks are clocked by: X-Ray writes its clock-to-out as
         # IOPATH CLK O6, without the edge.
@@ -208,7 +214,7 @@ class TimingDir:
             for variant, (sources, clocked) in CELLS.items():
                 cell = self.timing.add_cell_variant(g, variant)
                 entries = [e for source in sources for e in self.cells.get(source, {}).get(g, [])]
-                self.arcs(cell, entries + fallback.get(variant, []), clocked=clocked)
+                self.arcs(cell, entries + fallback.get(variant, []), clocked=clocked, renamed=RENAMED.get(variant, {}))
             for variant, source in BRAMS.items():
                 # The output registers' clocks are not the uarch's; a
                 # RAMB36's lower half is checked as its upper is.
@@ -218,6 +224,16 @@ class TimingDir:
                 for wsdp, rsdp, mode_a, mode_b in itertools.product((False, True), (False, True), WRITE_MODES, WRITE_MODES):
                     cell = self.timing.add_cell_variant(g, f"{variant}_{'WSDP' if wsdp else 'WTDP'}_{'RSDP' if rsdp else 'RTDP'}_{mode_a}_{mode_b}")
                     self.arcs(cell, entries, lambda pin, clock, wsdp=wsdp, rsdp=rsdp: dual_port(pin, clock, wsdp, rsdp))
+
+
+def rename(e, renamed):
+    """An SDF entry with its pins named as `renamed` says."""
+    pin = lambda name: [name[0], renamed.get(name[1], name[1])] if isinstance(name, list) else renamed.get(name, name)
+    if isinstance(e, parse_sdf.IOPath):
+        return parse_sdf.IOPath(pin(e.from_pin), pin(e.to_pin), e.rising, e.falling)
+    if isinstance(e, parse_sdf.SetupHoldCheck):
+        return parse_sdf.SetupHoldCheck(pin(e.pin), pin(e.clock), e.setup, e.hold)
+    return e
 
 
 def dual_port(pin, clock, wsdp, rsdp):
