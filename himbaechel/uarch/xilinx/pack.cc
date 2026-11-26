@@ -1035,6 +1035,81 @@ void XilinxPacker::constrain_srl_cascades()
     }
 }
 
+static IdString without_brackets(Context *ctx, IdString name)
+{
+    std::string stripped;
+    for (char c : name.str(ctx))
+        if (c != '[' && c != ']')
+            stripped += c;
+    return ctx->id(stripped);
+}
+
+void XC7Packer::record_design_inputs()
+{
+    for (auto &cell : ctx->cells)
+        for (auto &port : cell.second->ports)
+            if (port.second.type == PORT_IN && port.second.net != nullptr)
+                design_inputs[cell.first].insert(without_brackets(ctx, port.first));
+}
+
+void XC7Packer::tie_bel_pins()
+{
+    // Each input of a hard block the design leaves unconnected is held where
+    // the device database says a design holds it (`tie`): a reset or a
+    // power-down left floating keeps the block from running.  A cell's type
+    // is its bel's here, after the transforms that name it so.
+    dict<IdString, std::vector<std::pair<IdString, bool>>> ties_of;
+    pool<IdString> seen;
+    for (auto bel : ctx->getBels()) {
+        IdString type = ctx->getBelType(bel);
+        if (seen.count(type))
+            continue;
+        const auto &extra = *reinterpret_cast<const XlnxBelExtraDataPOD *>(chip_bel_info(ctx->chip_info, bel).extra_data.get());
+        if (extra.ties.ssize() == 0)
+            continue;
+        seen.insert(type);
+        for (const auto &tie : extra.ties)
+            ties_of[type].emplace_back(IdString(tie.pin), tie.value != 0);
+    }
+    NetInfo *gnd = ctx->nets.at(ctx->id("$PACKER_GND_NET")).get();
+    NetInfo *vcc = ctx->nets.at(ctx->id("$PACKER_VCC_NET")).get();
+    size_t tied = 0;
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        auto found = ties_of.find(ci->type);
+        if (found == ties_of.end())
+            continue;
+        // A cell's ports by the bel pins they become: a bus bit `DTS[0]` is
+        // the bel's `DTS0` until a transform renames it.
+        dict<IdString, IdString> port_of_pin;
+        for (auto &port : ci->ports)
+            port_of_pin[without_brackets(ctx, port.first)] = port.first;
+        const pool<IdString> &driven = design_inputs[ci->name];
+        for (auto &[pin, value] : found->second) {
+            // A pin the design drives -- with a constant a pass has since
+            // taken off it (STARTUP's) -- is the design's, not a tie's.
+            if (driven.count(pin))
+                continue;
+            IdString port = pin;
+            auto named = port_of_pin.find(pin);
+            if (named != port_of_pin.end()) {
+                port = named->second;
+                NetInfo *net = ci->ports.at(port).net;
+                if (net != nullptr && net->driver.cell != nullptr)
+                    continue;
+                if (net != nullptr)
+                    ci->disconnectPort(port);
+            } else {
+                ci->addInput(port);
+            }
+            ci->connectPort(port, value ? vcc : gnd);
+            tied++;
+        }
+    }
+    if (tied > 0)
+        log_info("Tied %zu unconnected hard-block input(s) where the device database says\n", tied);
+}
+
 void XilinxPacker::pack_constants()
 {
     log_info("Packing constants..\n");
@@ -1892,6 +1967,7 @@ void XilinxImpl::pack()
     apply_preplaced(false);
 
     XC7Packer packer(ctx, this);
+    packer.record_design_inputs();
     packer.pack_constants();
     packer.pack_inverters();
     packer.pack_io();
@@ -1903,6 +1979,7 @@ void XilinxImpl::pack()
     packer.pack_cfg();
     packer.pack_clocking();
     packer.pack_gt();
+    packer.tie_bel_pins();
     packer.generate_constraints();
     packer.pack_muxfs();
     packer.pack_carries();

@@ -218,6 +218,12 @@ struct XC7Packer : public XilinxPacker
     void constrain_ibufds_gt_site(CellInfo *buf_cell, BelId pad_bel);
     void constrain_gt(CellInfo *pad_cell, CellInfo *gt_cell);
     void pack_gt();
+    // Each cell's inputs the design itself connects (constants too), by
+    // name without brackets, as the netlist has them before any pass moves
+    // a constant off a pin.
+    dict<IdString, pool<IdString>> design_inputs;
+    void record_design_inputs();
+    void tie_bel_pins();
 
     // Clocking
     void bypass_pll_input_buffers();

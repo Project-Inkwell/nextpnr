@@ -40,6 +40,9 @@ class SiteBELPinData:
     name: str
     pindir: str
     site_wire_idx: int
+    # The value a design that leaves the input unconnected holds it at, where
+    # the device database states one (`tie`); None otherwise.
+    tie: int = None
 
 @dataclass
 class SiteBELData:
@@ -154,6 +157,8 @@ class SiteBELPin:
         return self.data.pindir
     def site_wire(self):
         return SiteWire(self.bel.site, self.data.site_wire_idx)
+    def tie(self):
+        return self.data.tie
 
 class SiteBEL:
     def __init__(self, site, index):
@@ -391,7 +396,8 @@ def import_device(fabricname, prjxray_root, metadata_root):
                     for bel, beldata in sorted(vdata["bels"].items()):
                         belpins = {}
                         for pin, pindata in sorted(beldata["pins"].items()):
-                            belpins[pin] = SiteBELPinData(name=pin, pindir=pindata["dir"], site_wire_idx=wire_index(pindata["wire"]))
+                            belpins[pin] = SiteBELPinData(name=pin, pindir=pindata["dir"], site_wire_idx=wire_index(pindata["wire"]),
+                                                          tie=pindata.get("tie"))
                         bd = SiteBELData(name=bel, bel_type=beldata["type"], bel_class=beldata["class"], pins=belpins)
                         bel_idx_by_name[bel] = len(vd.bels)
                         vd.bels.append(bd)

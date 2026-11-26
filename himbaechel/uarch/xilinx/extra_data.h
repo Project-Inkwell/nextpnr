@@ -5,7 +5,16 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
-NPNR_PACKED_STRUCT(struct XlnxBelExtraDataPOD { int32_t name_in_site; });
+// An input a design that leaves it unconnected holds at a constant.
+NPNR_PACKED_STRUCT(struct XlnxBelTiePOD {
+    int32_t pin;
+    int32_t value;
+});
+
+NPNR_PACKED_STRUCT(struct XlnxBelExtraDataPOD {
+    int32_t name_in_site;
+    RelSlice<XlnxBelTiePOD> ties;
+});
 
 struct BelSiteKey
 {

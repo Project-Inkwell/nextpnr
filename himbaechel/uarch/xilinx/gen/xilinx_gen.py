@@ -52,11 +52,18 @@ class PipExtraData(BBAStruct):
 @dataclass
 class BelExtraData(BBAStruct):
     name_in_site: IdString
+    # (bel pin, value): each input a design that leaves it unconnected holds
+    # at a constant, as the device database states it.
+    ties: list = field(default_factory=list)
 
     def serialise_lists(self, context: str, bba: BBAWriter):
-        pass
+        bba.label(f"{context}_ties")
+        for pin, value in self.ties:
+            bba.u32(pin.index)
+            bba.u32(value)
     def serialise(self, context: str, bba: BBAWriter):
         bba.u32(self.name_in_site.index)
+        bba.slice(f"{context}_ties", len(self.ties))
 
 @dataclass
 class SiteInst(BBAStruct):
@@ -380,6 +387,8 @@ def import_tiletype(ch: Chip, tile: xilinx_device.Tile):
                 nb = tt.create_bel(name=full_bel_name, type=filters.get_bel_type_override(bel.bel_type()), z=z)
                 nb.site = variant_key
                 nb.extra_data = BelExtraData(name_in_site=ch.strs.id(bel_name))
+                nb.extra_data.ties = [(ch.strs.id(filters.get_bel_pin_name_override(bel.bel_type(), pin.name)), pin.tie())
+                                      for pin in bel.pins() if pin.tie() is not None and pin.dir() == "INPUT"]
                 if bel.bel_class() == "RBEL": nb.flags |= 2
                 if filters.is_global_bel(bel):
                     nb.flags |= BEL_FLAG_GLOBAL
