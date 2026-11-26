@@ -1188,9 +1188,133 @@ static bool bram_regclkb_without_net(const Context *ctx, const CellInfo *ci)
     return sdp_by_mode || sdp_by_width;
 }
 
+// An UltraScale+ block RAM (RAMB36E2, RAMB18E2) onto its bel: each port
+// onto the bel pin of its name, brackets dropped, and a port the bel has
+// twice -- a RAMB36E2's controls, addresses and write enables, an L and a U
+// pin for its two halves -- onto both.
+void XC7Packer::pack_bram_usplus()
+{
+    dict<IdString, XFormRule> rules;
+    for (auto &kind : {std::make_pair(id_RAMB36E2, id_RAMB36E2_RAMB36E2), std::make_pair(id_RAMB18E2, id_RAMB18E2_RAMB18E2)}) {
+        bool used = false;
+        for (auto &cell : ctx->cells)
+            used |= cell.second->type == kind.first;
+        if (!used)
+            continue;
+        rules[kind.first].new_type = kind.second;
+        // WEBWE[7:4] write port B's upper bytes in a 72-bit write only, which
+        // is not learned yet; a narrower write leaves them unused.
+        for (int i = 4; i < 8; i++)
+            rules[kind.first].port_multixform[ctx->idf("WEBWE[%d]", i)] = {};
+        std::vector<std::pair<IdString, std::vector<std::string>>> ul_pins;
+        get_bram36_ul_pins(ctx, ul_pins, kind.second);
+        for (auto &ul : ul_pins)
+            for (auto &bp : ul.second)
+                rules[kind.first].port_multixform[ul.first].push_back(ctx->id(bp));
+        // A port the bel has in its L half only (ECCPIPECEL): onto that pin.
+        BelId bel;
+        for (auto each : ctx->getBels())
+            if (ctx->getBelType(each) == kind.second) {
+                bel = each;
+                break;
+            }
+        pool<IdString> pins;
+        for (auto pin : ctx->getBelPins(bel))
+            pins.insert(pin);
+        for (auto pin : pins) {
+            std::string name = pin.str(ctx);
+            const bool lower_only = name.size() > 1 && name.back() == 'L' && !pins.count(ctx->id(name.substr(0, name.size() - 1) + "U"));
+            if (lower_only && !pins.count(ctx->id(name.substr(0, name.size() - 1))))
+                rules[kind.first].port_multixform[ctx->id(name.substr(0, name.size() - 1))].push_back(pin);
+        }
+    }
+    // A write narrower than its port's byte enables takes the enables it
+    // uses on all of them: enable i is enable i modulo those used, as
+    // Vivado ties them.
+    // On UltraScale+ RAMB18E2, the physical bel has 4 WEA pins (WEA0..3) and
+    // 4 WEBWE pins (WEBWE0..3): in TDP (<=18-bit) mode each logical byte enable
+    // drives a pair ({0,1} and {2,3}); in 36-bit SDP mode (WRITE_WIDTH_B == 36),
+    // logical WEBWE[0..1] drive WEBWE{0,1} and WEBWE{2,3}, while logical
+    // WEBWE[2..3] drive WEA{0,1} and WEA{2,3}. Leaving WEA2/WEA3 unconnected
+    // floats them high on silicon and corrupts byte 3 on every cycle.
+    for (auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if (!ci->type.in(id_RAMB36E2, id_RAMB18E2))
+            continue;
+        auto set_port = [&](IdString port, NetInfo *net) {
+            if (!ci->ports.count(port))
+                ci->addInput(port);
+            ci->disconnectPort(port);
+            if (net != nullptr)
+                ci->connectPort(port, net);
+        };
+        if (ci->type == id_RAMB18E2) {
+            const int wa = int_or_default(ci->params, ctx->id("WRITE_WIDTH_A"), 0);
+            const int wb = int_or_default(ci->params, ctx->id("WRITE_WIDTH_B"), 0);
+            if (wb == 36) {
+                NetInfo *w[4];
+                for (int i = 0; i < 4; i++)
+                    w[i] = ci->getPort(ctx->idf("WEBWE[%d]", i));
+                set_port(ctx->id("WEBWE[0]"), w[0]);
+                set_port(ctx->id("WEBWE[1]"), w[0]);
+                set_port(ctx->id("WEBWE[2]"), w[1]);
+                set_port(ctx->id("WEBWE[3]"), w[1]);
+                set_port(ctx->id("WEA[0]"), w[2]);
+                set_port(ctx->id("WEA[1]"), w[2]);
+                set_port(ctx->id("WEA[2]"), w[3]);
+                set_port(ctx->id("WEA[3]"), w[3]);
+            } else {
+                NetInfo *a0 = ci->getPort(ctx->id("WEA[0]"));
+                NetInfo *a1 = (wa == 18 || wa == 0) ? ci->getPort(ctx->id("WEA[1]")) : a0;
+                set_port(ctx->id("WEA[0]"), a0);
+                set_port(ctx->id("WEA[1]"), a0);
+                set_port(ctx->id("WEA[2]"), a1);
+                set_port(ctx->id("WEA[3]"), a1);
+                NetInfo *b0 = ci->getPort(ctx->id("WEBWE[0]"));
+                NetInfo *b1 = (wb == 18 || wb == 0) ? ci->getPort(ctx->id("WEBWE[1]")) : b0;
+                set_port(ctx->id("WEBWE[0]"), b0);
+                set_port(ctx->id("WEBWE[1]"), b0);
+                set_port(ctx->id("WEBWE[2]"), b1);
+                set_port(ctx->id("WEBWE[3]"), b1);
+            }
+            continue;
+        }
+        if (int_or_default(ci->params, ctx->id("WRITE_WIDTH_B"), 0) == 72) {
+            // In 72-bit SDP mode on UltraScale+ RAMB36E2, logical WEBWE[0..3] drive
+            // WEBWEL/WEBWEU[0..3] (lower 36 bits, DINADIN/DINPADINP) and logical
+            // WEBWE[4..7] drive WEAL/WEAU[0..3] (upper 36 bits, DINBDIN/DINPBDINP),
+            // matching the RAMB18E2 36-bit SDP mapping across both halves.
+            for (int i = 0; i < 4; i++)
+                set_port(ctx->idf("WEA[%d]", i), ci->getPort(ctx->idf("WEBWE[%d]", i + 4)));
+            continue;
+        }
+        for (char port : {'A', 'B'}) {
+            const int width = int_or_default(ci->params, ctx->idf("WRITE_WIDTH_%c", port), 0);
+            if (width == 72)
+                log_error("%s: a 72-bit write (WRITE_WIDTH_%c 72) is not supported yet\n", ctx->nameOf(ci), port);
+            const int enables = 4;
+            const int used = std::max(width / 9, 1);
+            if (width == 0 || used >= enables)
+                continue;
+            const std::string prefix = port == 'A' ? "WEA[" : "WEBWE[";
+            std::vector<NetInfo *> nets;
+            for (int i = 0; i < used; i++)
+                nets.push_back(ci->getPort(ctx->id(prefix + std::to_string(i) + "]")));
+            for (int i = used; i < enables; i++)
+                set_port(ctx->id(prefix + std::to_string(i) + "]"), nets.at(i % used));
+        }
+    }
+    if (!rules.empty())
+        generic_xform(rules, false);
+}
+
 void XC7Packer::pack_bram()
 {
     log_info("Packing BRAM..\n");
+    if (boost::starts_with(ctx->args.device, "xcku")) {
+        pack_bram_usplus();
+        return;
+    }
 
     // Rules for normal TDP BRAM
     dict<IdString, XFormRule> bram_rules;
@@ -1207,7 +1331,7 @@ void XC7Packer::pack_bram()
     for (auto &cell : ctx->cells)
         has_ramb36e1 |= cell.second->type == id_RAMB36E1;
     if (has_ramb36e1)
-        get_bram36_ul_pins(ctx, ul_pins);
+        get_bram36_ul_pins(ctx, ul_pins, id_RAMB36E1_RAMB36E1);
     for (auto &ul : ul_pins) {
         for (auto &bp : ul.second)
             bram_rules[id_RAMB36E1].port_multixform[ul.first].push_back(ctx->id(bp));

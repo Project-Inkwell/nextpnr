@@ -412,11 +412,15 @@ void get_tied_pins(Context *ctx, dict<IdString, dict<IdString, bool>> &tied_pins
 
 // Get a list of logical pins that have both L and U bel pins that need
 // to be connected for a 36-bit BRAM
-void get_bram36_ul_pins(Context *ctx, std::vector<std::pair<IdString, std::vector<std::string>>> &ul_pins)
+// The input pins a block RAM bel of `bel_type` has twice, an L and a U
+// (`ADDRARDADDRL3`, `ADDRARDADDRU3`), each by its logical name
+// (`ADDRARDADDR[3]`): a 36Kb block's two halves, which a port drives alike.
+void get_bram36_ul_pins(Context *ctx, std::vector<std::pair<IdString, std::vector<std::string>>> &ul_pins,
+                        IdString bel_type)
 {
     BelId spec_bel;
     for (auto bel : ctx->getBels()) {
-        if (ctx->getBelType(bel) == id_RAMB36E1_RAMB36E1) {
+        if (ctx->getBelType(bel) == bel_type) {
             spec_bel = bel;
             break;
         }

@@ -5774,6 +5774,81 @@ struct FasmBackend
         }
     }
 
+    // Each block RAM's settings, as Vivado states a RAMB36E2's or a
+    // RAMB18E2's (sites.txt): each parameter of its cell, a number in
+    // decimal and a word as it is; its contents (INIT_xx, INITP_xx) and its
+    // outputs' initial and reset values (INIT_A, SRVAL_A, ...) as vectors,
+    // entry k bit k; its size and its half; and its cascade's muxes tied low
+    // inside the site (CAS*_GND TRUE), as a block RAM no cascade reaches is.
+    void write_usplus_brams()
+    {
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            const bool is_36 = ci->type == id_RAMB36E2_RAMB36E2;
+            if (!(is_36 || ci->type == id_RAMB18E2_RAMB18E2) || ci->bel == BelId())
+                continue;
+            // Its settings and contents are the variant's element's, as
+            // Vivado's sites.txt names them (RAMB36_X2.RAMB36E2): what the
+            // database states its tile's bits as functions of.
+            const std::string element = usplus_element(ci->bel);
+            const std::string &setting_element = element;
+            // What yosys leaves unset, as Vivado sets it: a function met
+            // these values, never an unset one.
+            const int width = is_36 ? 36 : 18;
+            const std::vector<std::pair<std::string, std::string>> defaults = {
+                    {"DOA_REG", "0"},           {"DOB_REG", "0"},           {"WRITE_MODE_A", "WRITE_FIRST"},
+                    {"WRITE_MODE_B", "WRITE_FIRST"}, {"RSTREG_PRIORITY_A", "RSTREG"}, {"RSTREG_PRIORITY_B", "RSTREG"},
+                    {"CLOCK_DOMAINS", "INDEPENDENT"}, {"READ_WIDTH_A", "0"},       {"READ_WIDTH_B", "0"},
+                    {"WRITE_WIDTH_A", "0"},     {"WRITE_WIDTH_B", "0"}};
+            for (auto &d : defaults)
+                if (!ci->params.count(ctx->id(d.first)))
+                    out << setting_element << "." << d.first << "." << d.second << std::endl;
+            for (const char *value : {"INIT_A", "INIT_B", "SRVAL_A", "SRVAL_B"})
+                if (!ci->params.count(ctx->id(value)))
+                    out << element << "." << value << "[" << (width - 1) << ":0] = " << width << "'b" << std::string(width, '0') << std::endl;
+            // Each inverting element, per half: the clocks', enables' and
+            // resets' IS_*_INVERTED, as Vivado configures them.
+            const std::vector<std::pair<const char *, const char *>> inverters = {
+                    {"IS_CLKARDCLK_INVERTED", "CLK_OPTINV_CLKA"}, {"IS_CLKBWRCLK_INVERTED", "CLK_OPTINV_CLKB"},
+                    {"IS_ENARDEN_INVERTED", "OPTINV_ENARDEN"},   {"IS_ENBWREN_INVERTED", "OPTINV_ENBWREN"},
+                    {"IS_RSTRAMARSTRAM_INVERTED", "OPTINV_RSTRAMA"}, {"IS_RSTRAMB_INVERTED", "OPTINV_RSTRAMB"},
+                    {"IS_RSTREGARSTREG_INVERTED", "OPTINV_RSTREGA"}, {"IS_RSTREGB_INVERTED", "OPTINV_RSTREGB"}};
+            const std::string bel_name = uarch->bel_name_in_site(ci->bel).str(ctx);
+            const std::string site_prefix = element.substr(0, element.rfind('.'));
+            for (auto &inv : inverters) {
+                const bool inverted = int_or_default(ci->params, ctx->id(inv.first), 0) != 0;
+                for (const char *half : is_36 ? std::vector<const char *>{"_L", "_U"}
+                                              : std::vector<const char *>{boost::ends_with(bel_name, "_U") ? "_U" : "_L"})
+                    out << site_prefix << "." << inv.second << half << ".INVERT." << (inverted ? "TRUE" : "FALSE") << std::endl;
+            }
+            for (auto &param : ci->params) {
+                const std::string name = param.first.str(ctx);
+                const Property &value = param.second;
+                const bool is_out_val = name == "INIT_A" || name == "INIT_B" || name == "SRVAL_A" || name == "SRVAL_B";
+                const bool is_vector = boost::starts_with(name, "INIT") || boost::starts_with(name, "SRVAL");
+                if (is_vector && !value.is_string) {
+                    // Yosys pads INIT_A/B and SRVAL_A/B to 72 bits; Vivado and
+                    // the database size them to the block's port width (36 or 18).
+                    const int param_width = is_out_val ? width : int(value.str.size());
+                    out << element << "." << name << "[" << (param_width - 1) << ":0] = " << param_width << "'b";
+                    for (int i = param_width - 1; i >= 0; i--)
+                        out << ((i < int(value.str.size()) && value.str.at(i) == '1') ? '1' : '0');
+                    out << std::endl;
+                } else {
+                    out << setting_element << "." << name << "."
+                        << (value.is_string ? value.as_string() : std::to_string(value.as_int64())) << std::endl;
+                }
+            }
+            const bool upper = is_36 || boost::ends_with(uarch->bel_name_in_site(ci->bel).str(ctx), "_U");
+            out << setting_element << ".RAM_SIZE." << (is_36 ? "S36K" : "S18K") << std::endl;
+            out << setting_element << ".IS_UPPER_INSTANCE." << (upper ? "TRUE" : "FALSE") << std::endl;
+            for (const char *mux : {"CASDIMUX", "CASDOMUX", "CASOREGIMUX"})
+                for (const char *port : {"A", "B"})
+                    for (const char *half : is_36 ? std::vector<const char *>{"L", "U"} : std::vector<const char *>{""})
+                        out << setting_element << "." << mux << port << half << "_GND.TRUE" << std::endl;
+        }
+    }
+
     // Each output buffer of an UltraScale+ bank, as Vivado sets an OBUF's
     // OUTBUF (sites.txt): its port's standard, drive and slew, an output's
     // IO_TYPE, and IOB_TYPE MASTER on either site of a pair.
@@ -5841,6 +5916,7 @@ struct FasmBackend
         out << "# chipdb " << ctx->chip_info->name.get() << " version " << ctx->chip_info->version << " generator "
             << ctx->chip_info->generator.get() << "\n";
         write_usplus_luts();
+        write_usplus_brams();
         write_usplus_registers();
         write_usplus_outputs();
         write_usplus_blocks();

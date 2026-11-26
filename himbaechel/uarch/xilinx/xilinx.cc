@@ -386,7 +386,8 @@ void XilinxImpl::update_logic_bel(BelId bel, CellInfo *cell)
 void XilinxImpl::update_bram_bel(BelId bel, CellInfo *cell)
 {
     IdString type = ctx->getBelType(bel);
-    if (!type.in(id_RAMBFIFO18E2_RAMBFIFO18E2, id_RAMBFIFO36E2_RAMBFIFO36E2, id_RAMB18E2_RAMB18E2, id_FIFO36E2_FIFO36E2,
+    if (!type.in(id_RAMBFIFO18E2_RAMBFIFO18E2, id_RAMBFIFO36E2_RAMBFIFO36E2, id_RAMB36E2_RAMB36E2,
+                 id_RAMB18E2_RAMB18E2, id_FIFO36E2_FIFO36E2, ctx->id("FIFO18E2_FIFO18E2"),
                  id_RAMBFIFO36E1_RAMBFIFO36E1, id_RAMB36E1_RAMB36E1, id_RAMB18E1_RAMB18E1))
         return;
     auto &tts = tile_status.at(bel.tile);
@@ -415,8 +416,16 @@ void XilinxImpl::update_bram_bel(BelId bel, CellInfo *cell)
             found = true;
             break;
         }
-        if (!found)
-            NPNR_ASSERT(found);
+        // An UltraScale+ block RAM bel of a variant with no twin of its type
+        // outside the variants (the RAMB18E2 of a RAMBFIFO18 site's RAMB180):
+        // its slot by its name, the half it is.
+        if (!found) {
+            const std::string name = bel_name_in_site(bel).str(ctx);
+            const bool lower_18 = name == "RAMB18E2_L", upper_18 = name == "RAMB18E2_U", whole_36 = name == "RAMB36E2";
+            z = lower_18 ? BEL_RAM18_L : upper_18 ? BEL_RAM18_U : BEL_RAM36;
+            found = lower_18 || upper_18 || whole_36;
+        }
+        NPNR_ASSERT(found);
     }
     NPNR_ASSERT(z >= 0 && z < 12);
     tts.bts->cells[z] = cell;
