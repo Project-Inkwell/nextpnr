@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The SLG47910's chipdb for nextpnr-himbaechel, from its Project Inkwell database.
 
-    slg47910_gen.py --db <forgefpga checkout> --bba chipdb-slg47910.bba
+    slg47910_gen.py --db <forgefpga-db checkout> --bba chipdb-slg47910.bba
 
 The database's slg47910/graph.json is the vendor's routing graph: 364 sites,
 48,544 routing nodes (each at a grid position, each named there), 310,016 pips
@@ -84,7 +84,7 @@ def cells(chip, grade, arcs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", required=True, help="Project Inkwell forgefpga checkout")
+    ap.add_argument("--db", required=True, help="Project-Inkwell/forgefpga-db checkout")
     ap.add_argument("--bba", required=True, help="bba file to write")
     args = ap.parse_args()
 

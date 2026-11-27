@@ -8,9 +8,9 @@ add_nextpnr_himbaechel_microarchitecture(${uarch}
 )
 
 set(HIMBAECHEL_SLG47910_DB "" CACHE STRING
-    "Path to a Project Inkwell forgefpga database checkout")
+    "Path to a Project-Inkwell/forgefpga-db checkout")
 if (NOT HIMBAECHEL_SLG47910_DB AND NOT IMPORT_BBA_FILES)
-    message(FATAL_ERROR "HIMBAECHEL_SLG47910_DB must be set to a Project Inkwell forgefpga checkout")
+    message(FATAL_ERROR "HIMBAECHEL_SLG47910_DB must be set to a Project-Inkwell/forgefpga-db checkout")
 endif()
 
 add_bba_produce_command(
